@@ -98,19 +98,23 @@ func cull_hidden_faces() -> void:
 		if not _entity_renders(entity):
 			continue
 		for brush in entity.brushes:
-			if _brush_has_visual_face(brush):
+			# A brush occludes if it is solid (has any non-clip/non-origin face),
+			# which includes skip-textured faces: those are invisible but still
+			# solid surfaces that hide geometry behind them.
+			if _brush_has_solid_face(brush):
 				var bounds := _brush_bounds(brush)
 				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
 			for face in brush.faces:
-				if not _is_visual_face(face):
-					continue
-				var record := {"entity": entity_index, "brush": brush, "face": face}
-				records.append(record)
-				var key := _plane_key(face.plane)
-				if bucket.has(key):
-					bucket[key].append(record)
-				else:
-					bucket[key] = [record]
+				# Covers/occluder faces: any solid surface (incl. skip).
+				if _is_solid_face(face):
+					var key := _plane_key(face.plane)
+					if bucket.has(key):
+						bucket[key].append(face)
+					else:
+						bucket[key] = [face]
+				# Candidates that can be culled/split: only rendered faces.
+				if _is_visual_face(face):
+					records.append({"entity": entity_index, "brush": brush, "face": face})
 
 	var to_remove: Array = []      # [brush, face]
 	var removed: Dictionary = {}   # face -> true
@@ -149,8 +153,7 @@ func cull_hidden_faces() -> void:
 			continue
 
 		var covers: Array = []
-		for other in bucket[opposite_key]:
-			var other_face: _FaceData = other["face"]
+		for other_face: _FaceData in bucket[opposite_key]:
 			if other_face == face:
 				continue
 			if not (-face.plane.normal).is_equal_approx(other_face.plane.normal):
@@ -211,15 +214,23 @@ func _entity_renders(entity: _EntityData) -> bool:
 		return def.build_visuals
 	return true
 
+# A face that is actually rendered (and so can be culled or split).
 func _is_visual_face(face: _FaceData) -> bool:
 	return (face.vertices.size() >= 3
 			and not is_skip(face)
 			and not is_clip(face)
 			and not is_origin(face))
 
-func _brush_has_visual_face(brush: _BrushData) -> bool:
+# A solid surface that hides geometry behind it. Includes skip (invisible but
+# solid); excludes clip (you see through it) and origin (entity marker).
+func _is_solid_face(face: _FaceData) -> bool:
+	return (face.vertices.size() >= 3
+			and not is_clip(face)
+			and not is_origin(face))
+
+func _brush_has_solid_face(brush: _BrushData) -> bool:
 	for face in brush.faces:
-		if _is_visual_face(face):
+		if _is_solid_face(face):
 			return true
 	return false
 

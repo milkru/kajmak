@@ -16,6 +16,7 @@ const CASES := {
 	"res://dev/maps/multi_brush.map":   {"drop": 4.0, "surf": 0,  "note": "two covers -> two bottoms removed + top split (2 holes)"},
 	"res://dev/maps/clip_occluder.map": {"drop": 0.0, "surf": 0,  "note": "clip must NOT occlude"},
 	"res://dev/maps/far_origin.map":    {"drop": 8.0, "surf": -1, "note": "cull+split far from origin"},
+	"res://dev/maps/skip_cover.map":    {"drop": 4.0, "surf": 0,  "note": "skip face IS an occluder -> wall behind it splits"},
 }
 
 func _init() -> void:

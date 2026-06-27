@@ -1,0 +1,28 @@
+// Game: FuncGodot
+// Format: Valve
+// Like cull_test, but the small box's contact face uses the "skip" texture
+// (invisible but solid) instead of a visible texture. The big box top must still
+// be split, because a skip face is a solid surface that hides geometry behind it.
+// (Regression guard for skip-as-occluder.)
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// big box (ground) 0..128
+{
+( 0 0 128 ) ( 0 0 0 ) ( 0 128 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 128 128 0 ) ( 128 0 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 128 ) ( 128 0 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 0 128 0 ) ( 128 128 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 0 128 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 128 ) ( 0 128 128 ) ( 128 128 128 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// small box glued on top; bottom (contact) face uses "skip"
+{
+( 32 32 192 ) ( 32 32 128 ) ( 32 96 128 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 192 ) ( 96 96 128 ) ( 96 32 128 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 32 32 192 ) ( 96 32 128 ) ( 32 32 128 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 192 ) ( 32 96 128 ) ( 96 96 128 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 128 ) ( 32 96 128 ) ( 32 32 128 ) skip [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 32 32 192 ) ( 32 96 192 ) ( 96 96 192 ) metal [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

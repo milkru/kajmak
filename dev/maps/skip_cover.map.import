@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://dfwtpbdsvnwhh"
+path="res://.godot/imported/skip_cover.map-64c8ba5f9d5446388425857f06855f2f.tres"
+
+[deps]
+
+source_file="res://dev/maps/skip_cover.map"
+dest_files=["res://.godot/imported/skip_cover.map-64c8ba5f9d5446388425857f06855f2f.tres"]
+
+[params]
+

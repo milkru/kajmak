@@ -4,3 +4,6 @@ dev/maps/first.map
 dev/maps/first.map.import
 dev/probe_*.gd
 dev/probe_*.gd.uid
+dev/capture.gd
+dev/capture.gd.uid
+dev/capture.tscn
