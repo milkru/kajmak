@@ -1,0 +1,6 @@
+# Dev-only, user-specific, or generated artifacts (never ship these)
+dev/out/
+dev/maps/first.map
+dev/maps/first.map.import
+dev/probe_*.gd
+dev/probe_*.gd.uid
