@@ -7,3 +7,5 @@ dev/probe_*.gd.uid
 dev/capture.gd
 dev/capture.gd.uid
 dev/capture.tscn
+dev/maps/qwe*.map
+dev/maps/qwe*.map.import

@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://1vf1y7jeft4o"
+path="res://.godot/imported/embedded_wall.map-9f1c6d07a27002cfa243f30e40c92f1f.tres"
+
+[deps]
+
+source_file="res://dev/maps/embedded_wall.map"
+dest_files=["res://.godot/imported/embedded_wall.map-9f1c6d07a27002cfa243f30e40c92f1f.tres"]
+
+[params]
+
