@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://dkr8cj1ql5hk6"
+path="res://.godot/imported/far_origin.map-14d0b226e36bc10c80d23f754ac7f76b.tres"
+
+[deps]
+
+source_file="res://dev/maps/far_origin.map"
+dest_files=["res://.godot/imported/far_origin.map-14d0b226e36bc10c80d23f754ac7f76b.tres"]
+
+[params]
+

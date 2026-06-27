@@ -12,15 +12,21 @@ class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
 ## are still in shared id-space here, so faces can be compared across brushes,
 ## entities and textures directly.
 ##
-## Stages implemented (see RESEARCH.md task breakdown):
-##   #2 coplanar/opposite face-pair detection (logged when debug_log_pairs)
-##   #3 full-overlap cull: remove faces entirely covered by opposite coplanar faces
-##   #4/#5 partial-overlap split: subtract covered regions in 2D, re-triangulate
-##         the remainder (handling holes), and rebuild the face's mesh data
+## What it does:
+##   - Only renderable, solid brush faces participate (triggers, point entities,
+##     and skip/clip/origin faces are ignored as occluders and never culled).
+##   - Faces fully buried inside another solid brush volume are removed (handles
+##     flush back-to-back faces and fully-embedded brushes).
+##   - Faces partially covered by opposite coplanar faces are split: covered
+##     regions are subtracted in 2D and the visible remainder is re-triangulated.
+##
+## Not yet handled (see RESEARCH.md): T-junction welding, so split faces may leave
+## hairline cracks against un-split neighbours. Illusionary/liquid brushes that
+## render but should not occlude are currently treated as occluders.
 
 ## When false, builds identically to stock func_godot (regression escape hatch).
 var enable_cull: bool = true
-## When true, prints detected pairs and per-face cull/split decisions.
+## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
 
 # A face is fully removed when its remaining area drops below this fraction of its
@@ -29,6 +35,8 @@ const _FULL_COVERAGE_EPSILON := 1.0e-3
 const _OVERLAP_EPSILON := 1.0e-4
 const _COPLANAR_TOLERANCE := 0.001
 const _DEDUP_PRECISION := 1024.0
+# Distance tolerance (Godot units) for point-in-brush-volume tests.
+const _VOLUME_TOLERANCE := 0.001
 
 # Copy of [method FuncGodotGeometryGenerator.build] that inserts the hidden-face
 # culling pre-pass between face winding and surface generation. Kept close to the
@@ -77,23 +85,24 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 
 #region HIDDEN-FACE CULLING
 
-## Global pre-pass. For every visual face, find the opposite-facing coplanar faces
-## that overlap it (from any brush/entity/texture) and subtract their covered
-## regions: faces that end up fully covered are removed, partially-covered faces
-## are re-triangulated to keep only their visible remainder. Faces are bucketed by
-## plane so each only compares against the few faces on its opposite plane.
+## Global pre-pass. Builds the set of solid occluder brushes and renderable
+## candidate faces, removes faces buried inside another solid, and splits faces
+## partially covered by opposite coplanar faces.
 func cull_hidden_faces() -> void:
-	var records: Array = []
-	var bucket: Dictionary = {}  # Vector4i -> Array[record]
+	var occluders: Array = []   # {brush, aabb, centroid}
+	var records: Array = []     # {entity, brush, face}
+	var bucket: Dictionary = {} # Vector4i -> Array[record]
+
 	for entity_index in entity_data.size():
 		var entity: _EntityData = entity_data[entity_index]
-		if not entity or entity.brushes.is_empty():
+		if not _entity_renders(entity):
 			continue
 		for brush in entity.brushes:
+			if _brush_has_visual_face(brush):
+				var bounds := _brush_bounds(brush)
+				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
 			for face in brush.faces:
-				if face.vertices.size() < 3:
-					continue
-				if is_skip(face) or is_origin(face):
+				if not _is_visual_face(face):
 					continue
 				var record := {"entity": entity_index, "brush": brush, "face": face}
 				records.append(record)
@@ -103,10 +112,24 @@ func cull_hidden_faces() -> void:
 				else:
 					bucket[key] = [record]
 
-	var to_remove: Array = []  # [brush, face]
+	var to_remove: Array = []      # [brush, face]
+	var removed: Dictionary = {}   # face -> true
 	var split_count: int = 0
+
+	# Pass 1: remove faces fully buried inside another solid brush volume.
 	for record in records:
 		var face: _FaceData = record["face"]
+		if _face_buried(face.vertices, record["brush"], occluders):
+			to_remove.append([record["brush"], face])
+			removed[face] = true
+			if debug_log_pairs:
+				print("[KAJMAK] e%d '%s' buried -> removed" % [record["entity"], face.texture])
+
+	# Pass 2: split faces partially covered by opposite coplanar faces.
+	for record in records:
+		var face: _FaceData = record["face"]
+		if removed.has(face):
+			continue
 
 		var opposite := Plane(face.plane)
 		opposite.normal = -opposite.normal
@@ -125,8 +148,7 @@ func cull_hidden_faces() -> void:
 		if face_area <= _OVERLAP_EPSILON:
 			continue
 
-		# Collect every opposite coplanar face that actually overlaps this one.
-		var covers: Array = []  # Array[PackedVector2Array]
+		var covers: Array = []
 		for other in bucket[opposite_key]:
 			var other_face: _FaceData = other["face"]
 			if other_face == face:
@@ -135,7 +157,6 @@ func cull_hidden_faces() -> void:
 				continue
 			if not other_face.plane.has_point(face.plane.get_center(), _COPLANAR_TOLERANCE):
 				continue
-
 			var other_2d := _project_2d(other_face.vertices, origin, u, v)
 			if _intersection_area_2d(face_2d, other_2d) <= face_area * _OVERLAP_EPSILON:
 				continue
@@ -144,20 +165,20 @@ func cull_hidden_faces() -> void:
 		if covers.is_empty():
 			continue
 
-		# Subtract all covered regions and measure what remains.
+		# Merge covers that overlap each other so the subtraction stays robust.
+		covers = _merge_overlapping(covers)
+
 		var remainder := _subtract(face_2d, covers)
 		var remaining_area := _region_area(remainder)
 
 		if remaining_area <= face_area * _FULL_COVERAGE_EPSILON:
 			to_remove.append([record["brush"], face])
-			if debug_log_pairs:
-				print("[KAJMAK] e%d '%s' fully covered -> removed" % [record["entity"], face.texture])
+			removed[face] = true
 			continue
 
 		if remaining_area >= face_area * (1.0 - _FULL_COVERAGE_EPSILON):
 			continue  # negligible overlap; leave the face untouched
 
-		# Partial coverage: re-triangulate the visible remainder and rebuild.
 		var triangles := _triangulate_region(remainder)
 		if triangles.is_empty():
 			continue  # triangulation failed; keep the whole face rather than corrupt it
@@ -174,6 +195,97 @@ func cull_hidden_faces() -> void:
 
 	if debug_log_pairs:
 		print("[KAJMAK] removed %d face(s), split %d face(s)" % [to_remove.size(), split_count])
+
+#endregion
+
+#region OCCLUDER / FACE CLASSIFICATION
+
+# Mirrors func_godot's surface-generation gate: a face renders only when its
+# entity has brushes and is a solid class that builds visuals (or has no solid
+# definition, which func_godot treats as a default visual solid).
+func _entity_renders(entity: _EntityData) -> bool:
+	if not entity or entity.brushes.is_empty():
+		return false
+	var def := entity.definition
+	if def is FuncGodotFGDSolidClass:
+		return def.build_visuals
+	return true
+
+func _is_visual_face(face: _FaceData) -> bool:
+	return (face.vertices.size() >= 3
+			and not is_skip(face)
+			and not is_clip(face)
+			and not is_origin(face))
+
+func _brush_has_visual_face(brush: _BrushData) -> bool:
+	for face in brush.faces:
+		if _is_visual_face(face):
+			return true
+	return false
+
+# AABB and centroid of a brush, computed from its face windings.
+func _brush_bounds(brush: _BrushData) -> Array:
+	var has := false
+	var mins := Vector3.ZERO
+	var maxs := Vector3.ZERO
+	var sum := Vector3.ZERO
+	var count := 0
+	for face in brush.faces:
+		for vertex in face.vertices:
+			if not has:
+				mins = vertex
+				maxs = vertex
+				has = true
+			else:
+				mins = mins.min(vertex)
+				maxs = maxs.max(vertex)
+			sum += vertex
+			count += 1
+	var centroid := sum / float(count) if count > 0 else Vector3.ZERO
+	return [AABB(mins, maxs - mins), centroid]
+
+# True when every point lies inside (or on) a convex brush volume. Works for
+# either plane-normal orientation by comparing each point against the side the
+# brush centroid is on.
+func _points_inside_brush(points: PackedVector3Array, planes: Array[Plane], centroid: Vector3) -> bool:
+	for plane in planes:
+		var centroid_dist := plane.distance_to(centroid)
+		for p in points:
+			var dist := plane.distance_to(p)
+			if centroid_dist < 0.0:
+				if dist > _VOLUME_TOLERANCE:
+					return false
+			else:
+				if dist < -_VOLUME_TOLERANCE:
+					return false
+	return true
+
+# True when a face is entirely contained in some occluder brush other than its own.
+func _face_buried(vertices: PackedVector3Array, own_brush: _BrushData, occluders: Array) -> bool:
+	var face_aabb := _aabb_of(vertices)
+	for occluder in occluders:
+		if occluder["brush"] == own_brush:
+			continue
+		var occ_aabb: AABB = occluder["aabb"]
+		if not occ_aabb.grow(_VOLUME_TOLERANCE).intersects(face_aabb):
+			continue
+		if _points_inside_brush(vertices, occluder["brush"].planes, occluder["centroid"]):
+			return true
+	return false
+
+func _aabb_of(points: PackedVector3Array) -> AABB:
+	if points.is_empty():
+		return AABB()
+	var mins := points[0]
+	var maxs := points[0]
+	for p in points:
+		mins = mins.min(p)
+		maxs = maxs.max(p)
+	return AABB(mins, maxs - mins)
+
+#endregion
+
+#region MESH REBUILD
 
 # Replace a face's geometry with the given list of 2D triangles (flat triples in
 # the (u, v) plane), lifted back to 3D. Rebuilds vertices, indices, normals and
@@ -251,6 +363,33 @@ func _intersection_area_2d(a: PackedVector2Array, b: PackedVector2Array) -> floa
 	for poly in Geometry2D.intersect_polygons(a, b):
 		area += absf(_signed_area_2d(poly))
 	return area
+
+# Union together any cover polygons that overlap each other, so the later
+# subtraction sees (effectively) disjoint covers.
+func _merge_overlapping(covers: Array) -> Array:
+	var result: Array = covers.duplicate()
+	var merged_any := true
+	while merged_any:
+		merged_any = false
+		var i := 0
+		while i < result.size():
+			var j := i + 1
+			while j < result.size():
+				if _intersection_area_2d(result[i], result[j]) > _OVERLAP_EPSILON:
+					var merged: Array = []
+					for poly in Geometry2D.merge_polygons(result[i], result[j]):
+						if not Geometry2D.is_polygon_clockwise(poly):
+							merged.append(poly)
+					result.remove_at(j)
+					if merged.size() > 0:
+						result[i] = merged[0]
+						for k in range(1, merged.size()):
+							result.append(merged[k])
+					merged_any = true
+				else:
+					j += 1
+			i += 1
+	return result
 
 # Subtract a set of clip polygons from a subject polygon. Returns
 # {outers: Array[PackedVector2Array], holes: Array[PackedVector2Array]}.

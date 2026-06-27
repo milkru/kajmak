@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://biehs23sa5wyr"
+path="res://.godot/imported/clip_occluder.map-00f722c26ecd5d7547b6b34a8dec4a50.tres"
+
+[deps]
+
+source_file="res://dev/maps/clip_occluder.map"
+dest_files=["res://.godot/imported/clip_occluder.map-00f722c26ecd5d7547b6b34a8dec4a50.tres"]
+
+[params]
+

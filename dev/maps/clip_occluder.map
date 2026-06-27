@@ -1,0 +1,26 @@
+// Game: FuncGodot
+// Format: Valve
+// A clip box sits flush on top of a ground box. Clip is invisible and must NOT
+// occlude: the ground top face must survive intact (no culling, no split).
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// ground box 0..128
+{
+( 0 0 128 ) ( 0 0 0 ) ( 0 128 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 128 128 0 ) ( 128 0 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 128 ) ( 128 0 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 0 128 0 ) ( 128 128 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 0 128 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 128 ) ( 0 128 128 ) ( 128 128 128 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// clip box 32..96 on top, all faces use the clip texture
+{
+( 32 32 160 ) ( 32 32 128 ) ( 32 96 128 ) clip [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 160 ) ( 96 96 128 ) ( 96 32 128 ) clip [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 32 32 160 ) ( 96 32 128 ) ( 32 32 128 ) clip [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 160 ) ( 32 96 128 ) ( 96 96 128 ) clip [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 128 ) ( 32 96 128 ) ( 32 32 128 ) clip [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 32 32 160 ) ( 32 96 160 ) ( 96 96 160 ) clip [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

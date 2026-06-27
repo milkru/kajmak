@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://cnchpayis0hb2"
+path="res://.godot/imported/multi_brush.map-f4a7f656ff94d632bc6b7a94815a1c16.tres"
+
+[deps]
+
+source_file="res://dev/maps/multi_brush.map"
+dest_files=["res://.godot/imported/multi_brush.map-f4a7f656ff94d632bc6b7a94815a1c16.tres"]
+
+[params]
+

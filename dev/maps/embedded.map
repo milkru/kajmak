@@ -1,0 +1,26 @@
+// Game: FuncGodot
+// Format: Valve
+// A small box (metal) fully embedded inside a big box (ground). Every face of the
+// small box is buried in solid, so the whole small box must be culled.
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// big box (ground) 0..128
+{
+( 0 0 128 ) ( 0 0 0 ) ( 0 128 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 128 128 0 ) ( 128 0 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 128 ) ( 128 0 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 0 128 0 ) ( 128 128 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 0 128 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 128 ) ( 0 128 128 ) ( 128 128 128 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// small box (metal) 48..80, fully inside the big box
+{
+( 48 48 80 ) ( 48 48 48 ) ( 48 80 48 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 80 ) ( 80 80 48 ) ( 80 48 48 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 80 ) ( 80 48 48 ) ( 48 48 48 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 80 ) ( 48 80 48 ) ( 80 80 48 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 48 ) ( 48 80 48 ) ( 48 48 48 ) metal [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 48 48 80 ) ( 48 80 80 ) ( 80 80 80 ) metal [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}
