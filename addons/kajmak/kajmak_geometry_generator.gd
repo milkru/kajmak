@@ -15,12 +15,10 @@ class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
 ## What it does:
 ##   - Only renderable, solid brush faces participate (triggers, point entities,
 ##     and skip/clip/origin faces are ignored as occluders and never culled).
-##   - Each face is clipped against the volumes of adjacent solid brushes (on its
-##     visible side). Fully-hidden faces are removed; partially-hidden faces are
-##     split, subtracting the covered region in 2D and re-triangulating the rest.
-##   - Driven by brush volumes, so it works whether the occluder sits flush, is
-##     embedded/interpenetrating, or fully contains the face, and regardless of
-##     how the occluder's own faces are textured (skip/visible).
+##   - Faces fully buried inside another solid brush volume are removed (handles
+##     flush back-to-back faces and fully-embedded brushes).
+##   - Faces partially covered by opposite coplanar faces are split: covered
+##     regions are subtracted in 2D and the visible remainder is re-triangulated.
 ##
 ## Not yet handled (see RESEARCH.md): T-junction welding, so split faces may leave
 ## hairline cracks against un-split neighbours. Illusionary/liquid brushes that
@@ -35,6 +33,7 @@ var debug_log_pairs: bool = false
 # original area, and left untouched when coverage is below _OVERLAP_EPSILON.
 const _FULL_COVERAGE_EPSILON := 1.0e-3
 const _OVERLAP_EPSILON := 1.0e-4
+const _COPLANAR_TOLERANCE := 0.001
 const _DEDUP_PRECISION := 1024.0
 # Distance tolerance (Godot units) for point-in-brush-volume tests.
 const _VOLUME_TOLERANCE := 0.001
@@ -86,35 +85,62 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 
 #region HIDDEN-FACE CULLING
 
-## Global pre-pass. For every rendered face, compute the region hidden by adjacent
-## solid brush volumes (flush, embedded or buried) and either remove the face
-## (fully hidden) or re-triangulate the visible remainder (partially hidden).
-## Driven by brush volumes, not coplanar faces, so it is independent of how the
-## occluding brush's own faces are textured (skip/visible) and of whether brushes
-## sit flush or interpenetrate.
+## Global pre-pass. Builds the set of solid occluder brushes and renderable
+## candidate faces, removes faces buried inside another solid, and splits faces
+## partially covered by opposite coplanar faces.
 func cull_hidden_faces() -> void:
 	var occluders: Array = []   # {brush, aabb, centroid}
-	var records: Array = []     # {entity, brush, face, centroid}
+	var records: Array = []     # {entity, brush, face}
+	var bucket: Dictionary = {} # Vector4i -> Array[record]
 
 	for entity_index in entity_data.size():
 		var entity: _EntityData = entity_data[entity_index]
 		if not _entity_renders(entity):
 			continue
 		for brush in entity.brushes:
-			if brush.origin or not _brush_has_solid_face(brush):
-				continue  # origin brushes and pure clip brushes do not occlude
-			var bounds := _brush_bounds(brush)
-			occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
+			# A brush occludes if it is solid (has any non-clip/non-origin face),
+			# which includes skip-textured faces: those are invisible but still
+			# solid surfaces that hide geometry behind them.
+			if _brush_has_solid_face(brush):
+				var bounds := _brush_bounds(brush)
+				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
 			for face in brush.faces:
+				# Covers/occluder faces: any solid surface (incl. skip).
+				if _is_solid_face(face):
+					var key := _plane_key(face.plane)
+					if bucket.has(key):
+						bucket[key].append(face)
+					else:
+						bucket[key] = [face]
+				# Candidates that can be culled/split: only rendered faces.
 				if _is_visual_face(face):
-					records.append({"entity": entity_index, "brush": brush, "face": face, "centroid": bounds[1]})
+					records.append({"entity": entity_index, "brush": brush, "face": face})
 
 	var to_remove: Array = []      # [brush, face]
+	var removed: Dictionary = {}   # face -> true
 	var split_count: int = 0
 
+	# Pass 1: remove faces fully buried inside another solid brush volume.
 	for record in records:
 		var face: _FaceData = record["face"]
-		var self_brush: _BrushData = record["brush"]
+		if _face_buried(face.vertices, record["brush"], occluders):
+			to_remove.append([record["brush"], face])
+			removed[face] = true
+			if debug_log_pairs:
+				print("[KAJMAK] e%d '%s' buried -> removed" % [record["entity"], face.texture])
+
+	# Pass 2: split faces partially covered by opposite coplanar faces.
+	for record in records:
+		var face: _FaceData = record["face"]
+		if removed.has(face):
+			continue
+
+		var opposite := Plane(face.plane)
+		opposite.normal = -opposite.normal
+		opposite.d = -opposite.d
+		var opposite_key := _plane_key(opposite)
+		if not bucket.has(opposite_key):
+			continue
 
 		# In-plane basis matching func_godot's winding frame (v = u x normal) so
 		# rebuilt triangles keep the same front-facing orientation.
@@ -126,41 +152,35 @@ func cull_hidden_faces() -> void:
 		if face_area <= _OVERLAP_EPSILON:
 			continue
 
-		# Visible side = away from this brush's interior.
-		var visible_sign := -1.0 if face.plane.distance_to(record["centroid"]) > 0.0 else 1.0
-		var face_aabb := _aabb_of(face.vertices)
-
 		var covers: Array = []
-		for occ in occluders:
-			var other_brush: _BrushData = occ["brush"]
-			if other_brush == self_brush:
+		for other_face: _FaceData in bucket[opposite_key]:
+			if other_face == face:
 				continue
-			var occ_aabb: AABB = occ["aabb"]
-			if not occ_aabb.grow(_VOLUME_TOLERANCE).intersects(face_aabb):
+			if not (-face.plane.normal).is_equal_approx(other_face.plane.normal):
 				continue
-			# Only brushes with volume in front of this face can hide it.
-			if not _brush_in_front(other_brush, face.plane, visible_sign):
+			if not other_face.plane.has_point(face.plane.get_center(), _COPLANAR_TOLERANCE):
 				continue
-			# Clip the face polygon to the cross-section of the brush volume.
-			var clipped := _clip_to_brush(face_2d, other_brush, occ["centroid"], origin, u, v)
-			if clipped.size() >= 3 and absf(_signed_area_2d(clipped)) > face_area * _OVERLAP_EPSILON:
-				covers.append(clipped)
+			var other_2d := _project_2d(other_face.vertices, origin, u, v)
+			if _intersection_area_2d(face_2d, other_2d) <= face_area * _OVERLAP_EPSILON:
+				continue
+			covers.append(other_2d)
 
 		if covers.is_empty():
 			continue
 
+		# Merge covers that overlap each other so the subtraction stays robust.
 		covers = _merge_overlapping(covers)
+
 		var remainder := _subtract(face_2d, covers)
 		var remaining_area := _region_area(remainder)
 
 		if remaining_area <= face_area * _FULL_COVERAGE_EPSILON:
-			to_remove.append([self_brush, face])
-			if debug_log_pairs:
-				print("[KAJMAK] e%d '%s' hidden -> removed" % [record["entity"], face.texture])
+			to_remove.append([record["brush"], face])
+			removed[face] = true
 			continue
 
 		if remaining_area >= face_area * (1.0 - _FULL_COVERAGE_EPSILON):
-			continue  # negligible coverage; leave the face untouched
+			continue  # negligible overlap; leave the face untouched
 
 		var triangles := _triangulate_region(remainder)
 		if triangles.is_empty():
@@ -168,7 +188,7 @@ func cull_hidden_faces() -> void:
 		_rebuild_face(face, triangles, origin, u, v)
 		split_count += 1
 		if debug_log_pairs:
-			print("[KAJMAK] e%d '%s' partially hidden -> split (%.1f%% remains)" % [
+			print("[KAJMAK] e%d '%s' partially covered -> split (%.1f%% remains)" % [
 				record["entity"], face.texture, 100.0 * remaining_area / face_area,
 			])
 
@@ -178,47 +198,6 @@ func cull_hidden_faces() -> void:
 
 	if debug_log_pairs:
 		print("[KAJMAK] removed %d face(s), split %d face(s)" % [to_remove.size(), split_count])
-
-# True when the brush has any volume on the visible side of the plane (so it can
-# hide a face lying on that plane). visible_sign selects which side is visible.
-func _brush_in_front(brush: _BrushData, plane: Plane, visible_sign: float) -> bool:
-	for face in brush.faces:
-		for vertex in face.vertices:
-			if plane.distance_to(vertex) * visible_sign > _VOLUME_TOLERANCE:
-				return true
-	return false
-
-# Clip a 2D face polygon (in the origin/u/v frame) to the cross-section of a
-# convex brush volume, by Sutherland-Hodgman clipping against each brush plane.
-func _clip_to_brush(poly: PackedVector2Array, brush: _BrushData, centroid: Vector3, origin: Vector3, u: Vector3, v: Vector3) -> PackedVector2Array:
-	var out := poly
-	for plane in brush.planes:
-		if out.size() < 3:
-			return PackedVector2Array()
-		# Half-plane in 2D: val(x,y) = plane.distance_to(origin + u*x + v*y).
-		var a := plane.distance_to(origin)
-		var b := plane.normal.dot(u)
-		var c := plane.normal.dot(v)
-		# Inside = same side as the brush centroid.
-		var s := 1.0 if plane.distance_to(centroid) >= 0.0 else -1.0
-		out = _clip_halfplane(out, a, b, c, s)
-	return out
-
-func _clip_halfplane(poly: PackedVector2Array, a: float, b: float, c: float, s: float) -> PackedVector2Array:
-	var res := PackedVector2Array()
-	var n := poly.size()
-	for i in n:
-		var cur := poly[i]
-		var nxt := poly[(i + 1) % n]
-		var dc := (a + b * cur.x + c * cur.y) * s
-		var dn := (a + b * nxt.x + c * nxt.y) * s
-		var cur_in := dc >= -_VOLUME_TOLERANCE
-		var nxt_in := dn >= -_VOLUME_TOLERANCE
-		if cur_in:
-			res.append(cur)
-		if cur_in != nxt_in and not is_equal_approx(dc, dn):
-			res.append(cur.lerp(nxt, dc / (dc - dn)))
-	return res
 
 #endregion
 
@@ -276,6 +255,35 @@ func _brush_bounds(brush: _BrushData) -> Array:
 	var centroid := sum / float(count) if count > 0 else Vector3.ZERO
 	return [AABB(mins, maxs - mins), centroid]
 
+# True when every point lies inside (or on) a convex brush volume. Works for
+# either plane-normal orientation by comparing each point against the side the
+# brush centroid is on.
+func _points_inside_brush(points: PackedVector3Array, planes: Array[Plane], centroid: Vector3) -> bool:
+	for plane in planes:
+		var centroid_dist := plane.distance_to(centroid)
+		for p in points:
+			var dist := plane.distance_to(p)
+			if centroid_dist < 0.0:
+				if dist > _VOLUME_TOLERANCE:
+					return false
+			else:
+				if dist < -_VOLUME_TOLERANCE:
+					return false
+	return true
+
+# True when a face is entirely contained in some occluder brush other than its own.
+func _face_buried(vertices: PackedVector3Array, own_brush: _BrushData, occluders: Array) -> bool:
+	var face_aabb := _aabb_of(vertices)
+	for occluder in occluders:
+		if occluder["brush"] == own_brush:
+			continue
+		var occ_aabb: AABB = occluder["aabb"]
+		if not occ_aabb.grow(_VOLUME_TOLERANCE).intersects(face_aabb):
+			continue
+		if _points_inside_brush(vertices, occluder["brush"].planes, occluder["centroid"]):
+			return true
+	return false
+
 func _aabb_of(points: PackedVector3Array) -> AABB:
 	if points.is_empty():
 		return AABB()
@@ -325,6 +333,17 @@ func _rebuild_face(face: _FaceData, triangles: PackedVector2Array, origin: Vecto
 #endregion
 
 #region 2D GEOMETRY HELPERS
+
+# Quantized plane key used to bucket coplanar faces. Self-contained so the addon
+# does not depend on func_godot internals that vary between versions.
+func _plane_key(plane: Plane) -> Vector4i:
+	const PLANE_PRECISION := 100.0
+	return Vector4i(
+		int(round(plane.normal.x * PLANE_PRECISION)),
+		int(round(plane.normal.y * PLANE_PRECISION)),
+		int(round(plane.normal.z * PLANE_PRECISION)),
+		int(round(plane.d * PLANE_PRECISION)),
+	)
 
 # An arbitrary unit vector perpendicular to the given plane normal.
 func _plane_tangent(normal: Vector3) -> Vector3:
