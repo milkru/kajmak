@@ -1,0 +1,7 @@
+[submodule "external/func_godot_test_project"]
+	path = external/func_godot_test_project
+	url = https://github.com/func-godot/func_godot_test_project.git
+	ignore = dirty
+[submodule "external/func_godot_example_basic"]
+	path = external/func_godot_example_basic
+	url = https://github.com/func-godot/func_godot_example_basic.git
