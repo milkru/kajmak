@@ -1,0 +1,31 @@
+// Game: FuncGodot
+// Format: Valve
+// Controlled test for Kajmak hidden-face culling.
+// Big box 0..128 (texture "ground"). Small box 32..96 x/y, 128..192 z glued on
+// top of the big box. The small box's bottom face (texture "hidden_tex") sits
+// flush, opposite and fully inside the big box's top face (texture "ground"):
+// it must be culled. The big box top is only partially covered, so it stays.
+// Different textures prove culling now works cross-texture (stock func_godot
+// only culls within a single texture bucket).
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// brush 0 - big box (ground)
+{
+( 0 0 128 ) ( 0 0 0 ) ( 0 128 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 128 128 0 ) ( 128 0 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 128 ) ( 128 0 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 0 128 0 ) ( 128 128 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 0 128 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 128 ) ( 0 128 128 ) ( 128 128 128 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// brush 1 - small box glued on top; bottom face uses "hidden_tex"
+{
+( 32 32 192 ) ( 32 32 128 ) ( 32 96 128 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 192 ) ( 96 96 128 ) ( 96 32 128 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 32 32 192 ) ( 96 32 128 ) ( 32 32 128 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 192 ) ( 32 96 128 ) ( 96 96 128 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 128 ) ( 32 96 128 ) ( 32 32 128 ) hidden_tex [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 32 32 192 ) ( 32 96 192 ) ( 96 96 192 ) metal [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

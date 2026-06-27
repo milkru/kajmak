@@ -17,7 +17,10 @@ const MAP_FILE := "res://maps/test1.map"
 
 func _init() -> void:
 	var stock := _build_and_measure(FuncGodotMap.new())
-	var kajmak := _build_and_measure(KajmakMap.new())
+	# Culling off must reproduce stock func_godot exactly (regression guard).
+	var kajmak_map := KajmakMap.new()
+	kajmak_map.cull_hidden_faces = false
+	var kajmak := _build_and_measure(kajmak_map)
 
 	print("\n==== KAJMAK SKELETON VERIFY ====")
 	print("map           : ", MAP_FILE)

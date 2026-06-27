@@ -11,6 +11,13 @@ class_name KajmakMap extends FuncGodotMap
 
 const _KAJMAK_SIGNATURE: String = "[KAJMAK]"
 
+@export_category("Kajmak")
+## When enabled, faces hidden behind adjacent solid geometry are culled at build
+## time (qbsp/vbsp-style). Disable to build identically to stock func_godot.
+@export var cull_hidden_faces: bool = true
+## Prints every detected coplanar/opposite overlapping face pair during the build.
+@export var debug_log_pairs: bool = false
+
 ## Copy of [method FuncGodotMap.build] that swaps the geometry generator for
 ## [KajmakGeometryGenerator]. Kept deliberately close to the original so it stays
 ## easy to diff against func_godot when the upstream driver changes.
@@ -49,6 +56,8 @@ func build() -> void:
 
 	# Retrieve geometry through our culling generator instead of the stock one
 	var generator := KajmakGeometryGenerator.new(map_settings, hyperplane_size)
+	generator.enable_cull = cull_hidden_faces
+	generator.debug_log_pairs = debug_log_pairs
 	if build_flags & BuildFlags.SHOW_PROFILE_INFO:
 		print("\nGEOMETRY GENERATOR (KAJMAK)")
 		generator.declare_step.connect(FuncGodotUtil.print_profile_info.bind(generator._SIGNATURE))
