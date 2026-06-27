@@ -99,7 +99,7 @@ func cull_hidden_faces() -> void:
 					"face": face,
 				}
 				records.append(record)
-				var key := get_plane_lookup_key(face.plane)
+				var key := _plane_key(face.plane)
 				if bucket.has(key):
 					bucket[key].append(record)
 				else:
@@ -114,7 +114,7 @@ func cull_hidden_faces() -> void:
 		var opposite := Plane(face.plane)
 		opposite.normal = -opposite.normal
 		opposite.d = -opposite.d
-		var opposite_key := get_plane_lookup_key(opposite)
+		var opposite_key := _plane_key(opposite)
 		if not bucket.has(opposite_key):
 			continue
 
@@ -172,6 +172,17 @@ func cull_hidden_faces() -> void:
 		print("[KAJMAK] detected %d overlapping coplanar pair(s); removed %d fully-covered face(s)" % [
 			pair_count, to_remove.size(),
 		])
+
+# Quantized plane key used to bucket coplanar faces. Self-contained so the addon
+# does not depend on func_godot internals that vary between versions.
+func _plane_key(plane: Plane) -> Vector4i:
+	const PLANE_PRECISION := 100.0
+	return Vector4i(
+		int(round(plane.normal.x * PLANE_PRECISION)),
+		int(round(plane.normal.y * PLANE_PRECISION)),
+		int(round(plane.normal.z * PLANE_PRECISION)),
+		int(round(plane.d * PLANE_PRECISION)),
+	)
 
 # Orthonormal in-plane basis [u, v] for a plane with the given normal.
 func _plane_uv_basis(normal: Vector3) -> Array:
