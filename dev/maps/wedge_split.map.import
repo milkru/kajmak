@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://125hi3ra662g"
+path="res://.godot/imported/wedge_split.map-2e4f7f6c89097c0a685a412d1662be96.tres"
+
+[deps]
+
+source_file="res://dev/maps/wedge_split.map"
+dest_files=["res://.godot/imported/wedge_split.map-2e4f7f6c89097c0a685a412d1662be96.tres"]
+
+[params]
+

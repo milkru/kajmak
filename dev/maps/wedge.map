@@ -1,0 +1,26 @@
+// Game: FuncGodot
+// Format: Valve
+// Two triangular prisms ("cut" brushes) that together fill a 128x128x64 box,
+// split along the diagonal from (128,0) to (0,128). Their angled hypotenuse faces
+// are flush, coplanar and opposite, so both must be culled. This exercises
+// non-axis-aligned (angled) coplanar culling.
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// Wedge A: triangle (0,0)-(128,0)-(0,128), extruded z 0..64
+{
+( 0 0 0 ) ( 128 0 0 ) ( 0 128 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 64 ) ( 0 128 64 ) ( 128 0 64 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 0 ) ( 0 0 64 ) ( 128 0 64 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 0 ) ( 0 128 0 ) ( 0 0 64 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 0 0 ) ( 128 0 64 ) ( 0 128 0 ) cutface [ 0 0 1 0 ] [ 0.70710678 -0.70710678 0 0 ] 0 1 1
+}
+// Wedge B: triangle (128,0)-(128,128)-(0,128), extruded z 0..64
+{
+( 128 0 0 ) ( 128 128 0 ) ( 0 128 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 128 0 64 ) ( 0 128 64 ) ( 128 128 64 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 128 0 0 ) ( 128 0 64 ) ( 128 128 64 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 128 128 64 ) ( 0 128 64 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 0 0 ) ( 0 128 0 ) ( 128 0 64 ) cutface [ 0 0 1 0 ] [ 0.70710678 -0.70710678 0 0 ] 0 1 1
+}
+}

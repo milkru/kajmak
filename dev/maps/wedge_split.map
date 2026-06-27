@@ -1,0 +1,25 @@
+// Game: FuncGodot
+// Format: Valve
+// Wedge A fills z 0..64; wedge B only z 0..32. They share the diagonal plane, so
+// A's hypotenuse is only partially covered (lower half) and must be SPLIT on a
+// tilted plane; B's hypotenuse is fully covered and removed.
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// Wedge A: triangle (0,0)-(128,0)-(0,128), z 0..64
+{
+( 0 0 0 ) ( 128 0 0 ) ( 0 128 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 64 ) ( 0 128 64 ) ( 128 0 64 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 0 ) ( 0 0 64 ) ( 128 0 64 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 0 ) ( 0 128 0 ) ( 0 0 64 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 0 0 ) ( 128 0 64 ) ( 0 128 0 ) cutface [ 0 0 1 0 ] [ 0.70710678 -0.70710678 0 0 ] 0 1 1
+}
+// Wedge B: triangle (128,0)-(128,128)-(0,128), z 0..32
+{
+( 128 0 0 ) ( 128 128 0 ) ( 0 128 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 128 0 32 ) ( 0 128 32 ) ( 128 128 32 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 128 0 0 ) ( 128 0 32 ) ( 128 128 32 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 128 128 32 ) ( 0 128 32 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 0 0 ) ( 0 128 0 ) ( 128 0 32 ) cutface [ 0 0 1 0 ] [ 0.70710678 -0.70710678 0 0 ] 0 1 1
+}
+}

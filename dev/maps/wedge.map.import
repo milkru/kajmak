@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://dad2pxx8asfgu"
+path="res://.godot/imported/wedge.map-becfed5e263cb0868ec1767396b891f8.tres"
+
+[deps]
+
+source_file="res://dev/maps/wedge.map"
+dest_files=["res://.godot/imported/wedge.map-becfed5e263cb0868ec1767396b891f8.tres"]
+
+[params]
+
