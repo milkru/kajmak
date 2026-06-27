@@ -6,9 +6,12 @@ extends SceneTree
 ## [KajmakMap] — and compares the resulting mesh surface/vertex counts. At the
 ## skeleton stage (no culling overrides yet) the output must be identical.
 ##
+## Dev-only; not part of the shipped addon. Lives in repo-root dev/ and is
+## junctioned into the test project as res://dev/ by dev/dev_setup.ps1.
+##
 ## Run:
 ##   godot --headless --path external/func_godot_test_project \
-##         --script res://addons/kajmak/test/verify_skeleton.gd
+##         --script res://dev/verify_skeleton.gd
 
 const MAP_FILE := "res://maps/test1.map"
 
@@ -22,7 +25,7 @@ func _init() -> void:
 	print("kajmak meshes : %d, surfaces: %d, vertices: %d" % kajmak)
 
 	var match_ok := stock == kajmak
-	print("RESULT        : ", "IDENTICAL ✓" if match_ok else "MISMATCH ✗")
+	print("RESULT        : ", "IDENTICAL" if match_ok else "MISMATCH")
 	print("================================\n")
 	quit(0 if match_ok else 1)
 
