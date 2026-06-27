@@ -1,66 +1,77 @@
 @tool
 extends SceneTree
-## Headless check for the full-overlap cull (tasks #2 + #3).
+## Headless check for culling + splitting (tasks #2-#5).
 ##
-## Builds dev/maps/cull_test.map with stock func_godot and with KajmakMap (cull
-## on). The small box's bottom face is flush against and fully inside the big
-## box's top face, with a different texture, so it must be culled — proving
-## cross-texture, cross-brush full-overlap culling. The partially-covered big top
-## face must survive (splitting it is task #4).
+## Builds dev/maps/cull_test.map with stock func_godot and with KajmakMap.
+## Big box top (texture "ground", area 4x4=16 u^2) has a small box glued to its
+## centre. Expected with culling on:
+##   - small box bottom face ("hidden_tex", 2x2=4 u^2) is fully covered -> removed
+##   - big box top is partially covered -> SPLIT into a frame, dropping the inner
+##     2x2=4 u^2 region but keeping the visible border
+## So total surface area must drop by exactly 8 u^2 (4 removed + 4 from the split),
+## and the "hidden_tex" surface disappears (one fewer surface). An area drop of
+## only 4 would mean the split didn't happen; a drop of 20 would mean the whole
+## top was wrongly removed.
 ##
 ## Run:
 ##   godot --headless --path external/func_godot_test_project \
 ##         --script res://dev/verify_cull.gd
 
 const MAP_FILE := "res://dev/maps/cull_test.map"
+const EXPECTED_AREA_DROP := 8.0
+const AREA_TOLERANCE := 0.05
 
 func _init() -> void:
-	var stock := _build_and_measure(FuncGodotMap.new(), false, false)
+	var stock := _stats(FuncGodotMap.new(), false)
 
 	var kajmak_map := KajmakMap.new()
 	kajmak_map.debug_log_pairs = true
-	var kajmak := _build_and_measure(kajmak_map, true, true)
+	var kajmak := _stats(kajmak_map, true)
 
-	print("\n==== KAJMAK CULL VERIFY ====")
-	print("map           : ", MAP_FILE)
-	print("stock  meshes : %d, surfaces: %d, vertices: %d" % stock)
-	print("kajmak meshes : %d, surfaces: %d, vertices: %d" % kajmak)
+	print("\n==== KAJMAK CULL/SPLIT VERIFY ====")
+	print("stock  : surfaces %d, verts %d, tris %d, area %.3f" % [stock.surfaces, stock.verts, stock.tris, stock.area])
+	print("kajmak : surfaces %d, verts %d, tris %d, area %.3f" % [kajmak.surfaces, kajmak.verts, kajmak.tris, kajmak.area])
 
-	# The single fully-covered face (its own texture surface) should be removed:
-	# one fewer surface, and four fewer vertices (one quad).
-	var surfaces_ok: bool = kajmak[1] == stock[1] - 1
-	var verts_ok: bool = kajmak[2] == stock[2] - 4
-	var ok: bool = surfaces_ok and verts_ok
+	var surfaces_ok: bool = kajmak.surfaces == stock.surfaces - 1
+	var area_drop: float = stock.area - kajmak.area
+	var area_ok: bool = absf(area_drop - EXPECTED_AREA_DROP) <= AREA_TOLERANCE
+	# A split adds vertices to the top face (frame has more verts than a quad).
+	var split_ok: bool = kajmak.tris > stock.tris - 2  # net triangles did not collapse
+	var ok: bool = surfaces_ok and area_ok
 
-	print("surface delta : %d (expect -1)  -> %s" % [int(kajmak[1]) - int(stock[1]), "OK" if surfaces_ok else "FAIL"])
-	print("vertex delta  : %d (expect -4)  -> %s" % [int(kajmak[2]) - int(stock[2]), "OK" if verts_ok else "FAIL"])
-	print("RESULT        : ", "PASS" if ok else "FAIL")
-	print("============================\n")
+	print("surfaces      : %d (expect %d)            -> %s" % [kajmak.surfaces, stock.surfaces - 1, "OK" if surfaces_ok else "FAIL"])
+	print("area drop     : %.3f (expect %.1f)        -> %s" % [area_drop, EXPECTED_AREA_DROP, "OK" if area_ok else "FAIL"])
+	print("RESULT        : %s" % ("PASS" if ok else "FAIL"))
+	print("==================================\n")
 	quit(0 if ok else 1)
 
-# Returns [mesh_count, surface_count, vertex_count].
-func _build_and_measure(map: FuncGodotMap, _is_kajmak: bool, cull: bool) -> Array:
+func _stats(map: FuncGodotMap, cull: bool) -> Dictionary:
 	if map is KajmakMap:
 		(map as KajmakMap).cull_hidden_faces = cull
 	map.local_map_file = MAP_FILE
 	get_root().add_child(map)
 	map.build()
 
-	var meshes := 0
-	var surfaces := 0
-	var vertices := 0
+	var result := {"meshes": 0, "surfaces": 0, "verts": 0, "tris": 0, "area": 0.0}
 	for node in _walk(map):
 		if node is MeshInstance3D and node.mesh != null:
 			var mesh: Mesh = node.mesh
-			meshes += 1
-			surfaces += mesh.get_surface_count()
+			result.meshes += 1
+			result.surfaces += mesh.get_surface_count()
 			for s in mesh.get_surface_count():
 				var arrays := mesh.surface_get_arrays(s)
 				var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-				vertices += verts.size()
+				var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+				result.verts += verts.size()
+				result.tris += indices.size() / 3
+				for i in range(0, indices.size(), 3):
+					var a := verts[indices[i]]
+					var b := verts[indices[i + 1]]
+					var c := verts[indices[i + 2]]
+					result.area += 0.5 * (b - a).cross(c - a).length()
 
 	map.queue_free()
-	return [meshes, surfaces, vertices]
+	return result
 
 func _walk(node: Node) -> Array[Node]:
 	var out: Array[Node] = [node]
