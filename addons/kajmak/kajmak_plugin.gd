@@ -16,7 +16,7 @@ func _enter_tree() -> void:
 	add_custom_type(
 		"KajmakMap",
 		"Node3D",
-		preload("res://addons/kajmak/src/kajmak_map.gd"),
+		preload("res://addons/kajmak/kajmak_map.gd"),
 		preload("res://addons/func_godot/icons/icon_slipgate3d.svg")
 	)
 
