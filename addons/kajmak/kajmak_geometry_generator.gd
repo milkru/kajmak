@@ -26,6 +26,9 @@ class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
 
 ## When false, builds identically to stock func_godot (regression escape hatch).
 var enable_cull: bool = true
+## When true, also remove faces whose front side opens onto the exterior void of a
+## sealed map (BSP flood from outside). Off by default and independent of culling.
+var cull_exterior: bool = false
 ## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
 ## Dev hook: when set, build a [KajmakBSP] from the occluder brushes after winding
@@ -33,7 +36,7 @@ var debug_log_pairs: bool = false
 ## the BSP rewrite. Off in normal builds, so it never affects output.
 var bsp_debug: bool = false
 ## Filled by [method _bsp_debug_stats] so a harness can read the result back.
-var bsp_last = null
+var bsp_last: Variant = null
 const _KajmakBSPScript = preload("res://addons/kajmak/kajmak_bsp.gd")
 
 # A face is fully removed when its remaining area drops below this fraction of its
@@ -76,9 +79,15 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 	if bsp_debug:
 		declare_step.emit("BSP debug stats")
 		_bsp_debug_stats()
-	elif enable_cull:
-		declare_step.emit("Culling hidden faces")
-		cull_hidden_faces()
+	else:
+		# Exterior void culling runs first on pristine faces, then hidden-face
+		# culling splits whatever remains.
+		if cull_exterior:
+			declare_step.emit("Culling exterior faces")
+			cull_exterior_faces()
+		if enable_cull:
+			declare_step.emit("Culling hidden faces")
+			cull_hidden_faces()
 
 	declare_step.emit("Generating surfaces")
 	task_id = WorkerThreadPool.add_group_task(generate_entity_surfaces, entity_count, -1, false, "Generate Surfaces")
@@ -249,10 +258,10 @@ func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Arra
 		return false
 	return true
 
-# Dev only: gather solid occluder brushes (same gate as the culler) and build a
-# BSP from their planes, then leave the result in [member bsp_last] for a harness
-# to inspect. Does not touch any face, so the build output is unchanged.
-func _bsp_debug_stats() -> void:
+# Gather solid occluder brushes (same gate as the culler) and build a BSP from
+# their planes. Each brush is passed with an interior point so the BSP can orient
+# its planes consistently. Returns the built KajmakBSP.
+func _build_occluder_bsp():
 	var brushes: Array = []
 	var all_points := PackedVector3Array()
 	for entity_index in entity_data.size():
@@ -270,8 +279,45 @@ func _bsp_debug_stats() -> void:
 
 	var bsp := _KajmakBSPScript.new()
 	bsp.build(brushes, _aabb_of(all_points))
+	return bsp
+
+# Remove faces that open onto the exterior void of a sealed map. Builds the BSP,
+# floods the empty space connected to the outside, and drops any visible face
+# whose front side lies entirely in that exterior space. A face that is partly
+# interior or buried is kept whole (the hidden-face pass handles burial).
+func cull_exterior_faces() -> void:
+	var bsp: Variant = _build_occluder_bsp()
+	bsp.mark_exterior()
+
+	var to_remove: Array = []
+	for entity_index in entity_data.size():
+		var entity: _EntityData = entity_data[entity_index]
+		if not _entity_renders(entity):
+			continue
+		for brush in entity.brushes:
+			for face in brush.faces:
+				if not _is_visual_face(face):
+					continue
+				if bsp.face_front_is_exterior(face.vertices, face.plane.normal):
+					to_remove.append([brush, face])
+					if debug_log_pairs:
+						print("[KAJMAK] e%d '%s' faces void -> removed" % [entity_index, face.texture])
+
+	for pair in to_remove:
+		var brush: _BrushData = pair[0]
+		brush.faces.erase(pair[1])
+
+	if debug_log_pairs:
+		print("[KAJMAK] exterior pass: %d leaves outside, removed %d face(s)" % [
+			bsp.exterior_leaf_count, to_remove.size()])
+
+# Dev only: build the occluder BSP and leave it in [member bsp_last] for a harness
+# to inspect. Does not touch any face, so the build output is unchanged.
+func _bsp_debug_stats() -> void:
+	var bsp: Variant = _build_occluder_bsp()
+	bsp.mark_exterior()
 	bsp_last = bsp
-	print("[KAJMAK BSP] brushes %d  %s" % [brushes.size(), bsp.stats_string()])
+	print("[KAJMAK BSP] %s exterior-leaves %d" % [bsp.stats_string(), bsp.exterior_leaf_count])
 
 #endregion
 

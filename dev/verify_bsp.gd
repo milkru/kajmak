@@ -34,15 +34,40 @@ func _init() -> void:
 		get_root().add_child(map)
 		map.build()
 
-		var bsp = map.bsp_last
+		var bsp: Variant = map.bsp_last
 		var ok: bool = bsp != null and bsp.leaf_count > 0 and not bsp.aborted
+		var mism := -1
+		if bsp != null:
+			mism = _solidity_mismatches(bsp)
+			ok = ok and mism == 0
 		all_ok = all_ok and ok
 		if bsp == null:
 			print("%s  -> FAIL (no tree)" % map_file.get_file())
 		else:
-			print("%s  -> %s  %s" % [map_file.get_file(), "PASS" if ok else "FAIL", bsp.stats_string()])
+			print("%s  -> %s  %s  solidity-mismatch %d" % [
+				map_file.get_file(), "PASS" if ok else "FAIL", bsp.stats_string(), mism])
 		map.queue_free()
 
 	print("RESULT: %s" % ("PASS" if all_ok else "FAIL"))
 	print("============================\n")
 	quit(0 if all_ok else 1)
+
+# Sample a jittered grid across the map bounds and compare the tree's leaf
+# solidity against the direct point-in-brush ground truth. The jitter keeps
+# sample points off grid-aligned brush planes so boundary ties do not register
+# as false mismatches.
+func _solidity_mismatches(bsp) -> int:
+	var box: AABB = bsp.bounds
+	var n := 12
+	var mismatches := 0
+	for ix in n:
+		for iy in n:
+			for iz in n:
+				var t := Vector3(
+					(ix + 0.317) / float(n),
+					(iy + 0.523) / float(n),
+					(iz + 0.731) / float(n))
+				var p := box.position + Vector3(box.size.x * t.x, box.size.y * t.y, box.size.z * t.z)
+				if bsp.is_solid(p) != bsp.is_solid_bruteforce(p):
+					mismatches += 1
+	return mismatches

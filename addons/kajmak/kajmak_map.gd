@@ -15,6 +15,10 @@ const _KAJMAK_SIGNATURE: String = "[KAJMAK]"
 ## When enabled, faces hidden behind adjacent solid geometry are culled at build
 ## time (qbsp/vbsp-style). Disable to build identically to stock func_godot.
 @export var cull_hidden_faces: bool = true
+## When enabled, faces that open onto the exterior void of a sealed map are culled
+## at build time, like a vis pass. Off by default and independent of
+## [member cull_hidden_faces]. Only safe on maps with no leaks to the outside.
+@export var cull_exterior_faces: bool = false
 ## Prints every detected coplanar/opposite overlapping face pair during the build.
 @export var debug_log_pairs: bool = false
 
@@ -23,7 +27,7 @@ const _KAJMAK_SIGNATURE: String = "[KAJMAK]"
 ## rewrite harness; leaves normal builds untouched.
 var bsp_debug: bool = false
 ## Dev-only: the BSP built during the last [code]bsp_debug[/code] build, for harnesses.
-var bsp_last = null
+var bsp_last: Variant = null
 
 ## Copy of [method FuncGodotMap.build] that swaps the geometry generator for
 ## [KajmakGeometryGenerator]. Kept deliberately close to the original so it stays
@@ -64,6 +68,7 @@ func build() -> void:
 	# Retrieve geometry through our culling generator instead of the stock one
 	var generator := KajmakGeometryGenerator.new(map_settings, hyperplane_size)
 	generator.enable_cull = cull_hidden_faces
+	generator.cull_exterior = cull_exterior_faces
 	generator.debug_log_pairs = debug_log_pairs
 	generator.bsp_debug = bsp_debug
 	if build_flags & BuildFlags.SHOW_PROFILE_INFO:

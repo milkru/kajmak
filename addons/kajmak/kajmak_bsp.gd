@@ -34,6 +34,8 @@ class BSPNode extends RefCounted:
 	var back: BSPNode = null     # cell on the negative side of plane
 	var is_leaf: bool = false
 	var solid: bool = false   # leaf only
+	var exterior: bool = false # leaf only: empty and reachable from the outside void
+	var cell: Array = []      # leaf only: inward-normal half-spaces of the cell
 	var depth: int = 0
 
 ## One convex brush: outward-oriented half-space planes plus a known interior point.
@@ -42,6 +44,9 @@ class Brush extends RefCounted:
 	var inside: Vector3
 
 var root: BSPNode = null
+var bounds: AABB             # the world AABB passed to build()
+var leaves: Array[BSPNode] = []
+var exterior_leaf_count: int = 0
 var _brushes: Array[Brush] = []
 
 # Stats, filled by build().
@@ -60,6 +65,7 @@ var aborted: bool = false
 ## [param world_aabb] bounds the map; the root cell is this box grown slightly.
 func build(brushes: Array, world_aabb: AABB) -> void:
 	var start := Time.get_ticks_usec()
+	bounds = world_aabb
 	_ingest_brushes(brushes)
 
 	var grown := world_aabb.grow(maxf(1.0, world_aabb.size.length() * 0.01))
@@ -72,9 +78,11 @@ func build(brushes: Array, world_aabb: AABB) -> void:
 	leaf_count = 0
 	solid_leaf_count = 0
 	empty_leaf_count = 0
+	exterior_leaf_count = 0
 	internal_count = 0
 	max_depth = 0
 	aborted = false
+	leaves.clear()
 	root = _build_node(cell, indices, 0)
 	build_msec = (Time.get_ticks_usec() - start) / 1000.0
 
@@ -108,7 +116,7 @@ func _build_node(cell: Array, brush_indices: PackedInt32Array, depth: int) -> BS
 
 	var verts := _cell_vertices(cell)
 	if verts.is_empty():
-		return _make_leaf(false, depth)  # degenerate sliver: treat as empty
+		return _make_leaf(false, depth, cell)  # degenerate sliver: treat as empty
 
 	# Classify each candidate brush against this cell. If the cell is fully inside
 	# any brush it is solid; brushes that miss the cell are dropped; the rest cross
@@ -117,21 +125,21 @@ func _build_node(cell: Array, brush_indices: PackedInt32Array, depth: int) -> BS
 	for bi in brush_indices:
 		match _classify_brush(_brushes[bi], verts):
 			_INSIDE:
-				return _make_leaf(true, depth)
+				return _make_leaf(true, depth, cell)
 			_CROSS:
 				crossing.append(bi)
 			# _OUTSIDE: drop
 
 	if crossing.is_empty():
-		return _make_leaf(false, depth)
+		return _make_leaf(false, depth, cell)
 
 	if depth >= _MAX_DEPTH or node_count >= _MAX_NODES:
 		aborted = true
-		return _make_leaf(false, depth)
+		return _make_leaf(false, depth, cell)
 
 	var split := _pick_split(crossing, verts)
 	if split == null:
-		return _make_leaf(false, depth)  # no plane actually cuts the cell
+		return _make_leaf(false, depth, cell)  # no plane actually cuts the cell
 
 	var front_cell := cell.duplicate()
 	front_cell.append(split)
@@ -147,17 +155,160 @@ func _build_node(cell: Array, brush_indices: PackedInt32Array, depth: int) -> BS
 	return node
 
 
-func _make_leaf(solid: bool, depth: int) -> BSPNode:
+func _make_leaf(solid: bool, depth: int, cell: Array) -> BSPNode:
 	var node := BSPNode.new()
 	node.is_leaf = true
 	node.solid = solid
+	node.cell = cell
 	node.depth = depth
 	leaf_count += 1
 	if solid:
 		solid_leaf_count += 1
 	else:
 		empty_leaf_count += 1
+	leaves.append(node)
 	return node
+
+
+## Walk the tree to the leaf cell that contains [param point]. On-plane points
+## (within EPS) resolve to the front child deterministically.
+func locate_leaf(point: Vector3) -> BSPNode:
+	var node := root
+	while node != null and not node.is_leaf:
+		if node.plane.distance_to(point) >= 0.0:
+			node = node.front
+		else:
+			node = node.back
+	return node
+
+
+## True when [param point] lies in solid space.
+func is_solid(point: Vector3) -> bool:
+	var leaf := locate_leaf(point)
+	return leaf != null and leaf.solid
+
+
+#region EXTERIOR VOID FLOOD
+
+# How far to step across a cell facet when finding the neighbour leaf, and how
+# far in front of a face to sample. Both are small multiples of EPS so we land
+# just across the boundary, inside the adjacent cell.
+const _STEP := EPS * 8.0
+const _FRONT_STEP := EPS * 16.0
+# Pull facet/face sample points this fraction toward their centroid so we never
+# sample exactly on an edge, where the containing leaf is ambiguous.
+const _INSET := 0.02
+
+## Flood fill the empty leaves that connect to the outside void, starting from a
+## point well outside the map. After this, [member BSPNode.exterior] is true on
+## every empty leaf reachable from outside without passing through solid.
+func mark_exterior() -> void:
+	for leaf in leaves:
+		leaf.exterior = false
+	exterior_leaf_count = 0
+
+	var margin := bounds.size.length() * 0.1 + 1.0
+	var seed := locate_leaf(bounds.position - Vector3.ONE * margin)
+	if seed == null or seed.solid:
+		return  # could not find an outside empty seed; mark nothing (safe)
+
+	var queue: Array[BSPNode] = [seed]
+	seed.exterior = true
+	exterior_leaf_count = 1
+	while not queue.is_empty():
+		var leaf: BSPNode = queue.pop_back()
+		for nb in _empty_neighbors(leaf):
+			if not nb.exterior:
+				nb.exterior = true
+				exterior_leaf_count += 1
+				queue.append(nb)
+
+
+# Find the empty leaves sharing a facet with this leaf. For each facet we step a
+# hair across it at several points and locate the leaf there, accepting it only
+# when it really borders the same plane (guards against overshooting thin solids).
+func _empty_neighbors(leaf: BSPNode) -> Array[BSPNode]:
+	var result: Array[BSPNode] = []
+	var verts := _cell_vertices(leaf.cell)
+	for plane: Plane in leaf.cell:
+		var facet := PackedVector3Array()
+		for v in verts:
+			if absf(plane.distance_to(v)) <= EPS * 4.0:
+				facet.append(v)
+		if facet.size() < 3:
+			continue  # not a real 2D face of the cell
+		for sample: Vector3 in _facet_samples(facet):
+			var probe := sample - plane.normal * _STEP
+			var nb := locate_leaf(probe)
+			if nb != null and nb != leaf and not nb.solid and not result.has(nb):
+				if _shares_plane(nb, plane):
+					result.append(nb)
+	return result
+
+
+# Sample points across a convex facet: its centroid plus each vertex pulled in
+# toward the centroid, so subdivided neighbours on the far side are all reached.
+func _facet_samples(facet: PackedVector3Array) -> PackedVector3Array:
+	var centroid := Vector3.ZERO
+	for v in facet:
+		centroid += v
+	centroid /= float(facet.size())
+	var out := PackedVector3Array()
+	out.append(centroid)
+	for v in facet:
+		out.append(v.lerp(centroid, _INSET))
+	return out
+
+
+# True when leaf has the opposite of plane among its cell boundaries, i.e. the
+# two cells genuinely meet on this plane.
+func _shares_plane(leaf: BSPNode, plane: Plane) -> bool:
+	for q in leaf.cell:
+		if q.normal.dot(plane.normal) < -0.999 and absf(q.d + plane.d) <= EPS * 4.0:
+			return true
+	return false
+
+
+## True when the space directly in front of a face is entirely exterior void.
+## Samples just off the face along [param normal] at its centroid and inset
+## corners; returns true only if every sample lands in an exterior empty leaf, so
+## a face that is partly interior or partly buried is conservatively kept.
+func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
+	if face_verts.size() < 3:
+		return false
+	for sample: Vector3 in _front_samples(face_verts, normal):
+		var leaf := locate_leaf(sample)
+		if leaf == null or leaf.solid or not leaf.exterior:
+			return false
+	return true
+
+
+func _front_samples(face_verts: PackedVector3Array, normal: Vector3) -> PackedVector3Array:
+	var centroid := Vector3.ZERO
+	for v in face_verts:
+		centroid += v
+	centroid /= float(face_verts.size())
+	var out := PackedVector3Array()
+	out.append(centroid + normal * _FRONT_STEP)
+	for v in face_verts:
+		out.append(v.lerp(centroid, _INSET) + normal * _FRONT_STEP)
+	return out
+
+#endregion
+
+
+## Direct point-in-any-brush test, bypassing the tree. Ground truth for tests:
+## a point is solid iff it is behind every plane of some brush.
+func is_solid_bruteforce(point: Vector3) -> bool:
+	for brush in _brushes:
+		var inside := true
+		for plane in brush.planes:
+			if plane.distance_to(point) > 0.0:
+				inside = false
+				break
+		if inside:
+			return true
+	return false
 
 
 # A brush's interior is the back side of all its (outward) planes. So the cell is
