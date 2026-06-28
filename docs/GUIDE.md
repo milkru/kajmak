@@ -30,11 +30,11 @@ All three live on the `KajmakMap` node in the Kajmak category. You also still ha
 
 This is the optional pass for sealed levels. The hidden face pass only removes faces touching another solid brush. The exterior pass goes after the other big pile of wasted faces, the outer shell of the level that faces the empty void outside, like the back of every outer wall, the underside of the floor and the top of the roof. The player is sealed inside and never sees any of it.
 
-Here is how it works. Kajmak builds a small BSP out of all your solid brushes, which carves the world into convex cells and tags each one solid or empty. Then it floods the empty cells starting from a point well outside the map. Every empty cell the flood can reach is exterior. Anything it cannot reach, like the inside of a sealed room, stays interior. A face is removed only when the space directly in front of it is entirely exterior. If any part of the front still faces a room or sits against solid, the face is kept whole.
+Here is how it works. Kajmak builds a small BSP out of all your solid brushes, which carves the world into convex cells and tags each one solid or empty. Then it floods the empty cells starting from a point well outside the map. Every empty cell the flood can reach is exterior. Anything it cannot reach, like the inside of a sealed room, stays interior. For each face Kajmak then clips it against those cells. The parts whose front opens onto the exterior void are dropped, and the parts that face a room or sit against solid are kept. So a face fully facing the void is removed, a face fully facing a room is left alone, and a face that straddles the two is split and rebuilt to just its visible piece.
 
-The flood runs first on the untouched faces, then the hidden face pass splits whatever is left, so the two passes stack cleanly.
+The hidden face pass runs first, then the exterior pass trims whatever is left down to its visible part, so the two passes stack cleanly. Both read each brush's interior point from a snapshot taken before any culling, so the order never corrupts either one.
 
-This pass assumes a sealed map. If there is a gap to the outside, the flood leaks in through it and marks interior cells as exterior, which would cull faces you actually see. Kajmak guards against the worst of this by only removing a face when its whole front is exterior, so a leak tends to nibble a few faces near the hole rather than gut a room. Still, treat a sudden missing wall as a sign of a leak and seal it. Turn on debug_log_pairs to see how many outside cells the flood found, a number far larger than you expect usually means it got out.
+This pass works best on a sealed map. If there is a gap to the outside, the flood leaks in through it and marks interior cells as exterior, which would cull faces you actually see. Because Kajmak keeps any part of a face that still faces a room, a leak tends to nibble the edges of a few faces near the hole rather than gut a room. Still, treat a sudden missing wall as a sign of a leak and seal it. Turn on debug_log_pairs to see how many outside cells the flood found, a number far larger than you expect usually means it got out.
 
 ## Groups, linked groups, layers
 
@@ -43,8 +43,8 @@ TrenchBroom groups and layers are just for organising. func_godot folds their br
 ## Limits worth knowing
 
 * A brush sunk fully inside another solid, with no face that lines up flush, will not be trimmed. Keep buried detail out of solids if you want it gone, or skip texture the faces yourself.
-* Exterior culling needs a sealed map and only removes a face when its whole front faces the void. A wall that is half against terrain and half open is kept whole rather than split.
-* No T junction welding. In grid snapped TrenchBroom geometry this has not shown up as visible cracks, but if you build very off grid you might see hairline seams at a split edge.
+* Exterior culling works best on a sealed map. A wall half against terrain and half open is split so only the open part goes, but a real leak to the outside will still cull less than you want until you seal it.
+* Splitting a face (either pass) can leave it as more triangles than it started with, and it leaves extra vertices on the cut edge without welding them to neighbours. On grid snapped geometry this has not shown up as visible cracks, but very off grid builds might show a hairline seam.
 
 ## Running the tests
 

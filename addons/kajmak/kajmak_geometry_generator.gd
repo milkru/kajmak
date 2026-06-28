@@ -340,28 +340,22 @@ func cull_exterior_faces() -> void:
 				var origin := face.plane.get_center()
 
 				var total_area := 0.0
-				var keep := PackedVector2Array()
+				var fragments: Array = []   # visible parts as 2D CCW polygons
 				var keep_area := 0.0
 				for tri: PackedVector3Array in _face_triangles_3d(face):
 					var t2d := _project_2d(tri, origin, u, v)
 					total_area += absf(_triangle_signed_area(t2d[0], t2d[1], t2d[2]))
 					for frag: PackedVector3Array in bsp.face_visible_fragments(tri, outward):
 						var f2d := _project_2d(frag, origin, u, v)
-						for i in range(1, f2d.size() - 1):
-							var area := _triangle_signed_area(f2d[0], f2d[i], f2d[i + 1])
-							if absf(area) <= 1.0e-9:
-								continue
-							var a := f2d[0]
-							var b := f2d[i]
-							var c := f2d[i + 1]
-							if area < 0.0:
-								var s := b
-								b = c
-								c = s
-							keep.append(a)
-							keep.append(b)
-							keep.append(c)
-							keep_area += absf(area)
+						if f2d.size() < 3:
+							continue
+						if _signed_area_2d(f2d) < 0.0:
+							f2d.reverse()
+						var fa := absf(_signed_area_2d(f2d))
+						if fa <= 1.0e-9:
+							continue
+						fragments.append(f2d)
+						keep_area += fa
 
 				if total_area <= 0.0:
 					continue
@@ -370,7 +364,13 @@ func cull_exterior_faces() -> void:
 					if debug_log_pairs:
 						print("[KAJMAK] e%d '%s' faces void -> removed" % [entity_index, face.texture])
 				elif keep_area < total_area * (1.0 - 1.0e-4):
-					rebuilds.append([face, keep, origin, u, v])
+					# Merge the visible fragments into as few polygons as possible, then
+					# triangulate, so a trimmed face does not explode into slivers. Fall
+					# back to a per-fragment fan if the merged triangulation looks wrong.
+					var tris := _exterior_triangulate(fragments)
+					if tris.is_empty() or absf(_tris_area(tris) - keep_area) > keep_area * 0.02:
+						tris = _fan_triangulate(fragments)
+					rebuilds.append([face, tris, origin, u, v])
 					trimmed += 1
 
 	for r in rebuilds:
@@ -398,6 +398,64 @@ func _face_triangles_3d(face: _FaceData) -> Array:
 		for i in range(1, verts.size() - 1):
 			out.append(PackedVector3Array([verts[0], verts[i], verts[i + 1]]))
 	return out
+
+# Above this many fragments, merging is not worth the cost; fall back to a fan.
+const _MERGE_FRAGMENT_CAP := 48
+
+# Merge connected coplanar visible fragments and triangulate each resulting
+# polygon with ear clipping, so a trimmed face stays as few triangles as it can.
+# Returns flat CCW 2D triangle triples, or empty to signal "use the fallback".
+func _exterior_triangulate(fragments: Array) -> PackedVector2Array:
+	if fragments.size() > _MERGE_FRAGMENT_CAP:
+		return PackedVector2Array()
+
+	# Fold each fragment into an accumulator of disjoint merged polygons. Only fuse
+	# when the union is one hole-free ring; a hole or separate patch stays its own.
+	var acc: Array = []
+	for frag: PackedVector2Array in fragments:
+		var cur := frag
+		var i := 0
+		while i < acc.size():
+			var res := Geometry2D.merge_polygons(cur, acc[i])
+			if res.size() == 1 and not Geometry2D.is_polygon_clockwise(res[0]):
+				cur = res[0]
+				acc.remove_at(i)
+				i = 0  # cur grew; re-test against everything once more
+			else:
+				i += 1
+		acc.append(cur)
+
+	var out := PackedVector2Array()
+	for poly: PackedVector2Array in acc:
+		if poly.size() < 3:
+			continue
+		var tris := _earcut(poly, [])
+		for t in range(0, tris.size(), 3):
+			_append_ccw(out, tris[t], tris[t + 1], tris[t + 2])
+	return out
+
+# Per-fragment fan triangulation, used as a robust fallback.
+func _fan_triangulate(fragments: Array) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for poly: PackedVector2Array in fragments:
+		for i in range(1, poly.size() - 1):
+			_append_ccw(out, poly[0], poly[i], poly[i + 1])
+	return out
+
+func _append_ccw(out: PackedVector2Array, a: Vector2, b: Vector2, c: Vector2) -> void:
+	if _triangle_signed_area(a, b, c) < 0.0:
+		var s := b
+		b = c
+		c = s
+	out.append(a)
+	out.append(b)
+	out.append(c)
+
+func _tris_area(tris: PackedVector2Array) -> float:
+	var area := 0.0
+	for t in range(0, tris.size(), 3):
+		area += absf(_triangle_signed_area(tris[t], tris[t + 1], tris[t + 2]))
+	return area
 
 # Dev only: build the occluder BSP and leave it in [member bsp_last] for a harness
 # to inspect. Does not touch any face, so the build output is unchanged.

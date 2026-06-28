@@ -37,12 +37,12 @@ If you already have a scene with a `FuncGodotMap` node, the easiest move is to a
 On the `KajmakMap` node, under the Kajmak category:
 
 * **cull_hidden_faces** On by default. Turn it off to build exactly like plain func_godot, which is handy if you ever want to compare.
-* **cull_exterior_faces** Off by default. Turn it on and Kajmak also removes faces that face the empty void outside a sealed level, like the outer shell of your walls, floors and roof that the player never sees. It builds a little BSP of your solid brushes and floods the empty space from outside in, so anything the outside can reach is fair game. Only switch this on for sealed maps. If there is a hole to the outside the flood leaks in and faces around the leak get kept, so nothing breaks, you just cull less. See the guide for how it works and how to spot leaks.
-* **debug_log_pairs** Off by default. Turn it on and rebuild to print what got removed and split to the Output panel. With exterior culling on it also prints how many outside leaves it found and how many faces it dropped. Only useful when something looks off and you want to see what Kajmak noticed.
+* **cull_exterior_faces** Off by default. Turn it on and Kajmak also removes the faces that face the empty void outside a sealed level, like the outer shell of your walls, floors and roof that the player never sees. It builds a little BSP of your solid brushes and floods the empty space from outside in, so anything the outside can reach is fair game. A face that is partly outside and partly facing a room is split, so only the outside part goes and the part you can see stays. If even a sliver of a face looks into a room you can stand in, that bit is kept. Works best on sealed maps. If there is a hole to the outside the flood leaks in and faces near the leak get kept, so nothing breaks, you just cull less. See the guide for how it works and how to spot leaks.
+* **debug_log_pairs** Off by default. Turn it on and rebuild to print what got removed and split to the Output panel. With exterior culling on it also prints how many outside leaves it found and how many faces it dropped or trimmed. Only useful when something looks off and you want to see what Kajmak noticed.
 
 ## What it does not do (yet)
 
 * A brush floating fully inside another solid, with no shared flush face, is not culled. In practice you just avoid burying brushes like that.
-* Exterior culling only removes a face when its whole front faces the void. A face that is half outside and half facing a room is kept whole rather than split.
+* Splitting a face leaves extra vertices on the cut edge but does not weld them to neighbours, so in theory you could see a hairline crack on very off grid geometry. It has not shown up in practice.
 
 There is more detail in [docs/GUIDE.md](docs/GUIDE.md).
