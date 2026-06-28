@@ -99,12 +99,15 @@ func _build_toolbar() -> void:
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _toolbar)
 	_toolbar.visible = false
 
-# A built-in grayscale editor icon for the progress toolbar, like the lightmap
-# bake button uses. Falls back through a few names in case of theme changes.
+# Grayscale icon for the progress toolbar: the func_godot slipgate symbol (same
+# family as the KajmakMap node icon, but the monochrome 2D variant rather than the
+# tinted 3D node one). Falls back to monochrome editor icons if it is ever missing.
 func _toolbar_icon() -> Texture2D:
+	const SLIPGATE := "res://addons/func_godot/icons/icon_slipgate.svg"
+	if ResourceLoader.exists(SLIPGATE):
+		return load(SLIPGATE)
 	var theme := EditorInterface.get_editor_theme()
 	if theme:
-		# Resource/tool icons are monochrome; node icons (MeshInstance3D) are tinted.
 		for name in ["Mesh", "Bake", "Tools"]:
 			if theme.has_icon(name, "EditorIcons"):
 				return theme.get_icon(name, "EditorIcons")
@@ -133,7 +136,7 @@ func request_build(map: Object) -> void:
 	_building = true
 	_cull_ok = false
 	_cancel_button.disabled = false
-	_label.text = "Building map  0 s"
+	_label.text = "Building map... 0s"
 	if _toolbar:
 		_toolbar.visible = true
 
@@ -154,7 +157,7 @@ func _process(_delta: float) -> void:
 	var status: String = _state.step if not String(_state.step).is_empty() else "Building map"
 	if _state.cancelled:
 		status = "Cancelling"
-	_label.text = "%s  %d s" % [status, int(elapsed)]
+	_label.text = "%s... %ds" % [status, int(elapsed)]
 
 	if _thread != null and not _thread.is_alive():
 		_finish()
