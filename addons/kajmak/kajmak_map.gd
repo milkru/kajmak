@@ -22,6 +22,11 @@ class BuildState extends RefCounted:
 	var cancelled: bool = false
 	var step: String = ""
 
+## Factory so the plugin can make a state without naming the inner class (keeps the
+## plugin script free of any func_godot dependency at parse time).
+func make_build_state() -> BuildState:
+	return BuildState.new()
+
 @export_category("Kajmak")
 ## When enabled, faces hidden behind adjacent solid geometry are culled at build
 ## time (qbsp/vbsp-style). Disable to build identically to stock func_godot.
