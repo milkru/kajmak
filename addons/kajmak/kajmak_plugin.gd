@@ -78,27 +78,41 @@ func _warn(msg: String) -> void:
 
 func _build_toolbar() -> void:
 	_toolbar = HBoxContainer.new()
-	_toolbar.add_theme_constant_override("separation", 4)
+
+	# Small spacer so the icon isn't flush against the strip's left edge.
+	var lead := Control.new()
+	lead.custom_minimum_size = Vector2(6, 0)
+	_toolbar.add_child(lead)
+
+	# Size the icon to match the editor's built-in toolbar icons (the same size the
+	# bake button uses), reading it from the theme rather than hardcoding.
+	var icon_size := Vector2(16, 16) * EditorInterface.get_editor_scale()
+	var theme := EditorInterface.get_editor_theme()
+	if theme and theme.has_icon("Bake", "EditorIcons"):
+		icon_size = theme.get_icon("Bake", "EditorIcons").get_size()
 
 	var icon := TextureRect.new()
 	icon.texture = _toolbar_icon()
-	# Ignore the texture's (large) native size and render it at a fixed 16x16 so it
-	# does not balloon to the toolbar row height.
 	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	icon.custom_minimum_size = Vector2(16, 16) * EditorInterface.get_editor_scale()
-	icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	icon.custom_minimum_size = icon_size
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_toolbar.add_child(icon)
 
 	_label = Label.new()
-	_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_toolbar.add_child(_label)
 
 	_cancel_button = Button.new()
 	_cancel_button.text = "Cancel"
+	_cancel_button.set_theme_type_variation("FlatButton")  # flat, like the toolbar buttons
 	_cancel_button.pressed.connect(_on_cancel_pressed)
 	_toolbar.add_child(_cancel_button)
+
+	# Match the toolbar row height so the strip lines up with the menu.
+	var row_h := _cancel_button.get_combined_minimum_size().y
+	if row_h > 0.0:
+		_toolbar.custom_minimum_size = Vector2(0, row_h)
 
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _toolbar)
 	_toolbar.visible = false
