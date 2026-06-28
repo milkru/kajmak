@@ -371,12 +371,17 @@ const _EXTERIOR_FRACTION := 0.5
 ## [constant _EXTERIOR_FRACTION] of the whole face, so a mostly-interior face that
 ## only touches an opening with a sliver is kept.
 func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
+	return exterior_fraction(face_verts, normal) >= _EXTERIOR_FRACTION
+
+
+## Fraction (0..1) of a face's area whose front lands in exterior empty leaves.
+func exterior_fraction(face_verts: PackedVector3Array, normal: Vector3) -> float:
 	if face_verts.size() < 3:
-		return false
+		return 0.0
 	var total := _poly_area(face_verts)
 	if total <= 0.0:
-		return false
-	return _exterior_area(root, face_verts, normal) >= total * _EXTERIOR_FRACTION
+		return 0.0
+	return _exterior_area(root, face_verts, normal) / total
 
 
 # Sum the area of the face polygon pieces that front an exterior empty leaf.
