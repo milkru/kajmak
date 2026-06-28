@@ -183,15 +183,8 @@ func cull_hidden_faces() -> void:
 			continue  # negligible overlap; leave the face untouched
 
 		var triangles := _triangulate_region(remainder)
-
-		# Safety net: accept the split only if the triangles faithfully reproduce the
-		# remaining area (catches any triangulation error). Otherwise keep the whole
-		# face — a missed cull is fine, corrupted geometry is not.
-		var tri_area := 0.0
-		for t in range(0, triangles.size(), 3):
-			tri_area += absf(_triangle_signed_area(triangles[t], triangles[t + 1], triangles[t + 2]))
-		if triangles.is_empty() or absf(tri_area - remaining_area) > face_area * 0.01 + 1.0e-5:
-			continue
+		if not _split_is_valid(face_2d, face_area, covers, triangles):
+			continue  # keep the whole face — a missed cull is fine, corruption is not
 		_rebuild_face(face, triangles, origin, u, v)
 		split_count += 1
 		if debug_log_pairs:
@@ -205,6 +198,35 @@ func cull_hidden_faces() -> void:
 
 	if debug_log_pairs:
 		print("[KAJMAK] removed %d face(s), split %d face(s)" % [to_remove.size(), split_count])
+
+# Validate a split triangulation without relying on exact boolean areas (which are
+# unreliable when covers overlap). Every triangle must lie in the visible region
+# (centroid inside the face and outside every cover); the total must not exceed the
+# face; and it must cover at least the area that is guaranteed visible (the face
+# minus the summed cover area — a safe lower bound). A failure keeps the face whole.
+func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Array, triangles: PackedVector2Array) -> bool:
+	if triangles.is_empty():
+		return false
+	var tri_area := 0.0
+	for t in range(0, triangles.size(), 3):
+		var a := triangles[t]
+		var b := triangles[t + 1]
+		var c := triangles[t + 2]
+		tri_area += absf(_triangle_signed_area(a, b, c))
+		var centroid := (a + b + c) / 3.0
+		if not Geometry2D.is_point_in_polygon(centroid, face_2d):
+			return false
+		for cover in covers:
+			if Geometry2D.is_point_in_polygon(centroid, cover):
+				return false
+	if tri_area > face_area * 1.01 + 1.0e-5:
+		return false
+	var summed_cover := 0.0
+	for cover in covers:
+		summed_cover += _intersection_area_2d(cover, face_2d)
+	if tri_area < face_area - summed_cover - face_area * 0.01 - 1.0e-5:
+		return false
+	return true
 
 #endregion
 
@@ -716,9 +738,107 @@ func _ec_earcut_linked(ear_start: _ECNode, triangles: PackedInt32Array, pass_num
 			continue
 		ear = next
 		if ear == stop:
-			# No ear found in a full loop: filter degenerate points and retry once.
+			# No ear found in a full loop: try progressively stronger recovery.
 			if pass_num == 0:
 				_ec_earcut_linked(_ec_filter_points(ear, null), triangles, 1)
+			elif pass_num == 1:
+				ear = _ec_cure_local_intersections(_ec_filter_points(ear, null), triangles)
+				_ec_earcut_linked(ear, triangles, 2)
+			elif pass_num == 2:
+				_ec_split_earcut(ear, triangles)
 			return
+
+func _ec_sign(v: float) -> int:
+	return (0 if v == 0.0 else (1 if v > 0.0 else -1))
+
+func _ec_on_segment(p: _ECNode, q: _ECNode, r: _ECNode) -> bool:
+	return (minf(p.x, r.x) <= q.x and q.x <= maxf(p.x, r.x)
+			and minf(p.y, r.y) <= q.y and q.y <= maxf(p.y, r.y))
+
+func _ec_intersects(p1: _ECNode, q1: _ECNode, p2: _ECNode, q2: _ECNode) -> bool:
+	var o1 := _ec_sign(_ec_area(p1, q1, p2))
+	var o2 := _ec_sign(_ec_area(p1, q1, q2))
+	var o3 := _ec_sign(_ec_area(p2, q2, p1))
+	var o4 := _ec_sign(_ec_area(p2, q2, q1))
+	if o1 != o2 and o3 != o4:
+		return true
+	if o1 == 0 and _ec_on_segment(p1, p2, q1):
+		return true
+	if o2 == 0 and _ec_on_segment(p1, q2, q1):
+		return true
+	if o3 == 0 and _ec_on_segment(p2, p1, q2):
+		return true
+	if o4 == 0 and _ec_on_segment(p2, q1, q2):
+		return true
+	return false
+
+# Resolve self-intersections by clipping off the offending vertex as a triangle.
+func _ec_cure_local_intersections(start: _ECNode, triangles: PackedInt32Array) -> _ECNode:
+	var p := start
+	while true:
+		var a := p.prev
+		var b := p.next.next
+		if (not _ec_equals(a, b) and _ec_intersects(a, p, p.next, b)
+				and _ec_locally_inside(a, b) and _ec_locally_inside(b, a)):
+			triangles.append(a.i)
+			triangles.append(p.i)
+			triangles.append(b.i)
+			_ec_remove(p)
+			_ec_remove(p.next)
+			p = b
+			start = b
+		p = p.next
+		if p == start:
+			break
+	return _ec_filter_points(p, null)
+
+# Split a stuck polygon along a valid diagonal and triangulate each half.
+func _ec_split_earcut(start: _ECNode, triangles: PackedInt32Array) -> void:
+	var a := start
+	while true:
+		var b := a.next.next
+		while b != a.prev:
+			if a.i != b.i and _ec_is_valid_diagonal(a, b):
+				var c := _ec_split_polygon(a, b)
+				a = _ec_filter_points(a, a.next)
+				c = _ec_filter_points(c, c.next)
+				_ec_earcut_linked(a, triangles, 0)
+				_ec_earcut_linked(c, triangles, 0)
+				return
+			b = b.next
+		a = a.next
+		if a == start:
+			break
+
+func _ec_intersects_polygon(a: _ECNode, b: _ECNode) -> bool:
+	var p := a
+	while true:
+		if (p.i != a.i and p.next.i != a.i and p.i != b.i and p.next.i != b.i
+				and _ec_intersects(p, p.next, a, b)):
+			return true
+		p = p.next
+		if p == a:
+			break
+	return false
+
+func _ec_middle_inside(a: _ECNode, b: _ECNode) -> bool:
+	var p := a
+	var inside := false
+	var px := (a.x + b.x) / 2.0
+	var py := (a.y + b.y) / 2.0
+	while true:
+		if ((p.y > py) != (p.next.y > py) and p.next.y != p.y
+				and px < (p.next.x - p.x) * (py - p.y) / (p.next.y - p.y) + p.x):
+			inside = not inside
+		p = p.next
+		if p == a:
+			break
+	return inside
+
+func _ec_is_valid_diagonal(a: _ECNode, b: _ECNode) -> bool:
+	return (a.next.i != b.i and a.prev.i != b.i and not _ec_intersects_polygon(a, b)
+			and ((_ec_locally_inside(a, b) and _ec_locally_inside(b, a) and _ec_middle_inside(a, b)
+					and (_ec_area(a.prev, a, b.prev) != 0.0 or _ec_area(a, b.prev, b) != 0.0))
+				or (_ec_equals(a, b) and _ec_area(a.prev, a, a.next) > 0.0 and _ec_area(b.prev, b, b.next) > 0.0)))
 
 #endregion
