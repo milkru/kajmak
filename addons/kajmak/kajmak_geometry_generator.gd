@@ -168,49 +168,11 @@ func cull_hidden_faces() -> void:
 		if covers.is_empty():
 			continue
 
-		# Clip each cover to the face so we work only with the covered sub-regions.
-		var covered: Array = []  # Array[PackedVector2Array]
-		for cover in covers:
-			for piece in Geometry2D.intersect_polygons(face_2d, cover):
-				if absf(_signed_area_2d(piece)) > face_area * _OVERLAP_EPSILON:
-					covered.append(piece)
-		if covered.is_empty():
-			continue
+		# Merge covers that overlap each other so the subtraction stays robust.
+		covers = _merge_overlapping(covers)
 
-		# Re-triangulate the visible remainder. We Delaunay-triangulate the face's
-		# corners plus all cover corners (Steiner points), then keep only triangles
-		# whose centroid lies inside the face and outside every covered region. This
-		# is robust for big faces with small holes (where bridge-based triangulation
-		# of a holed polygon breaks down).
-		var points := PackedVector2Array(face_2d)
-		for piece in covered:
-			points.append_array(piece)
-		var tri_indices := Geometry2D.triangulate_delaunay(points)
-
-		var triangles := PackedVector2Array()
-		var remaining_area := 0.0
-		for t in range(0, tri_indices.size(), 3):
-			var a := points[tri_indices[t]]
-			var b := points[tri_indices[t + 1]]
-			var c := points[tri_indices[t + 2]]
-			var centroid := (a + b + c) / 3.0
-			if not Geometry2D.is_point_in_polygon(centroid, face_2d):
-				continue
-			var hidden := false
-			for piece in covered:
-				if Geometry2D.is_point_in_polygon(centroid, piece):
-					hidden = true
-					break
-			if hidden:
-				continue
-			if _triangle_signed_area(a, b, c) < 0.0:
-				var tmp := b
-				b = c
-				c = tmp
-			triangles.append(a)
-			triangles.append(b)
-			triangles.append(c)
-			remaining_area += absf(_triangle_signed_area(a, b, c))
+		var remainder := _subtract(face_2d, covers)
+		var remaining_area := _region_area(remainder)
 
 		if remaining_area <= face_area * _FULL_COVERAGE_EPSILON:
 			to_remove.append([record["brush"], face])
@@ -218,10 +180,11 @@ func cull_hidden_faces() -> void:
 			continue
 
 		if remaining_area >= face_area * (1.0 - _FULL_COVERAGE_EPSILON):
-			continue  # negligible coverage; leave the face untouched
+			continue  # negligible overlap; leave the face untouched
 
+		var triangles := _triangulate_region(remainder)
 		if triangles.is_empty():
-			continue  # could not triangulate; keep the whole face rather than corrupt it
+			continue  # triangulation failed; keep the whole face rather than corrupt it
 		_rebuild_face(face, triangles, origin, u, v)
 		split_count += 1
 		if debug_log_pairs:
@@ -412,8 +375,147 @@ func _intersection_area_2d(a: PackedVector2Array, b: PackedVector2Array) -> floa
 		area += absf(_signed_area_2d(poly))
 	return area
 
-# Signed area of a 2D triangle (positive = counter-clockwise in the u,v frame).
+# Union together any cover polygons that overlap each other, so the later
+# subtraction sees (effectively) disjoint covers.
+func _merge_overlapping(covers: Array) -> Array:
+	var result: Array = covers.duplicate()
+	var merged_any := true
+	while merged_any:
+		merged_any = false
+		var i := 0
+		while i < result.size():
+			var j := i + 1
+			while j < result.size():
+				if _intersection_area_2d(result[i], result[j]) > _OVERLAP_EPSILON:
+					var merged: Array = []
+					for poly in Geometry2D.merge_polygons(result[i], result[j]):
+						if not Geometry2D.is_polygon_clockwise(poly):
+							merged.append(poly)
+					result.remove_at(j)
+					if merged.size() > 0:
+						result[i] = merged[0]
+						for k in range(1, merged.size()):
+							result.append(merged[k])
+					merged_any = true
+				else:
+					j += 1
+			i += 1
+	return result
+
+# Subtract a set of clip polygons from a subject polygon. Returns
+# {outers: Array[PackedVector2Array], holes: Array[PackedVector2Array]}.
+# Only solid outer rings are fed back into successive subtractions; holes are
+# accumulated for later hole-aware triangulation.
+func _subtract(subject: PackedVector2Array, clips: Array) -> Dictionary:
+	var outers: Array = [subject]
+	var holes: Array = []
+	for clip in clips:
+		var next_outers: Array = []
+		for outer in outers:
+			for poly in Geometry2D.clip_polygons(outer, clip):
+				if Geometry2D.is_polygon_clockwise(poly):
+					holes.append(poly)
+				else:
+					next_outers.append(poly)
+		outers = next_outers
+		if outers.is_empty():
+			break
+	return {"outers": outers, "holes": holes}
+
+# Net area of a {outers, holes} region.
+func _region_area(region: Dictionary) -> float:
+	var area := 0.0
+	for outer in region["outers"]:
+		area += absf(_signed_area_2d(outer))
+	for hole in region["holes"]:
+		area -= absf(_signed_area_2d(hole))
+	return maxf(area, 0.0)
+
+# Triangulate a {outers, holes} region into a flat list of 2D triangle triples,
+# each enforced counter-clockwise so lifted triangles stay front-facing.
+func _triangulate_region(region: Dictionary) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for outer in region["outers"]:
+		var ring: PackedVector2Array = outer
+		# Bridge any holes contained in this outer into a single simple ring.
+		for hole in region["holes"]:
+			if hole.size() < 3:
+				continue
+			if Geometry2D.is_point_in_polygon(hole[0], outer):
+				ring = _bridge_hole(ring, hole)
+		var indices := Geometry2D.triangulate_polygon(ring)
+		if indices.is_empty():
+			continue
+		for i in range(0, indices.size(), 3):
+			var a := ring[indices[i]]
+			var b := ring[indices[i + 1]]
+			var c := ring[indices[i + 2]]
+			if _triangle_signed_area(a, b, c) < 0.0:
+				var swap := b
+				b = c
+				c = swap
+			out.append(a)
+			out.append(b)
+			out.append(c)
+	return out
+
 func _triangle_signed_area(a: Vector2, b: Vector2, c: Vector2) -> float:
 	return ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5
+
+# Merge a hole into an outer ring by connecting them with a (zero-width) bridge,
+# producing a single weakly-simple polygon that triangulate_polygon can handle.
+func _bridge_hole(outer: PackedVector2Array, hole: PackedVector2Array) -> PackedVector2Array:
+	# Bridge from the hole's right-most vertex to the nearest visible outer vertex.
+	var m := 0
+	for i in hole.size():
+		if hole[i].x > hole[m].x:
+			m = i
+	var mp := hole[m]
+
+	var best := -1
+	var best_dist := INF
+	for i in outer.size():
+		if not _bridge_visible(mp, outer[i], outer, hole):
+			continue
+		var d := mp.distance_squared_to(outer[i])
+		if d < best_dist:
+			best_dist = d
+			best = i
+	if best == -1:
+		return outer  # no clear bridge found; leave hole (degrades to over-keeping)
+
+	var ring := PackedVector2Array()
+	for i in best + 1:
+		ring.append(outer[i])
+	for k in hole.size():
+		ring.append(hole[(m + k) % hole.size()])
+	ring.append(hole[m])
+	ring.append(outer[best])
+	for i in range(best + 1, outer.size()):
+		ring.append(outer[i])
+	return ring
+
+# True when segment p->q does not properly cross any edge of outer or hole.
+func _bridge_visible(p: Vector2, q: Vector2, outer: PackedVector2Array, hole: PackedVector2Array) -> bool:
+	return _ring_clear(p, q, outer) and _ring_clear(p, q, hole)
+
+func _ring_clear(p: Vector2, q: Vector2, ring: PackedVector2Array) -> bool:
+	var n := ring.size()
+	for i in n:
+		if _segments_cross(p, q, ring[i], ring[(i + 1) % n]):
+			return false
+	return true
+
+# Proper segment intersection test (shared endpoints / collinear touches ignored).
+func _segments_cross(p1: Vector2, p2: Vector2, p3: Vector2, p4: Vector2) -> bool:
+	var d1 := _orient(p3, p4, p1)
+	var d2 := _orient(p3, p4, p2)
+	var d3 := _orient(p1, p2, p3)
+	var d4 := _orient(p1, p2, p4)
+	return (((d1 > 0.0 and d2 < 0.0) or (d1 < 0.0 and d2 > 0.0))
+			and ((d3 > 0.0 and d4 < 0.0) or (d3 < 0.0 and d4 > 0.0)))
+
+func _orient(a: Vector2, b: Vector2, c: Vector2) -> float:
+	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 
 #endregion

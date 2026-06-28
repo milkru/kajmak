@@ -7,5 +7,3 @@ dev/probe_*.gd.uid
 dev/capture.gd
 dev/capture.gd.uid
 dev/capture.tscn
-dev/maps/first_test.map
-dev/maps/first_test.map.import
