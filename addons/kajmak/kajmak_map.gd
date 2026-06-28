@@ -18,6 +18,13 @@ const _KAJMAK_SIGNATURE: String = "[KAJMAK]"
 ## Prints every detected coplanar/opposite overlapping face pair during the build.
 @export var debug_log_pairs: bool = false
 
+## Dev-only (not exported): when true, the generator builds a [KajmakBSP] from the
+## occluder brushes and prints its stats instead of culling. Used by the BSP
+## rewrite harness; leaves normal builds untouched.
+var bsp_debug: bool = false
+## Dev-only: the BSP built during the last [code]bsp_debug[/code] build, for harnesses.
+var bsp_last = null
+
 ## Copy of [method FuncGodotMap.build] that swaps the geometry generator for
 ## [KajmakGeometryGenerator]. Kept deliberately close to the original so it stays
 ## easy to diff against func_godot when the upstream driver changes.
@@ -58,6 +65,7 @@ func build() -> void:
 	var generator := KajmakGeometryGenerator.new(map_settings, hyperplane_size)
 	generator.enable_cull = cull_hidden_faces
 	generator.debug_log_pairs = debug_log_pairs
+	generator.bsp_debug = bsp_debug
 	if build_flags & BuildFlags.SHOW_PROFILE_INFO:
 		print("\nGEOMETRY GENERATOR (KAJMAK)")
 		generator.declare_step.connect(FuncGodotUtil.print_profile_info.bind(generator._SIGNATURE))
@@ -67,6 +75,7 @@ func build() -> void:
 	if generate_error != OK:
 		fail_build("Geometry generation failed: %s" % error_string(generate_error))
 		return
+	bsp_last = generator.bsp_last
 
 	# Assemble entities and groups
 	var assembler := FuncGodotEntityAssembler.new(map_settings)

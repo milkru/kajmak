@@ -28,6 +28,13 @@ class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
 var enable_cull: bool = true
 ## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
+## Dev hook: when set, build a [KajmakBSP] from the occluder brushes after winding
+## and print its stats instead of culling. Used by dev/verify_bsp.gd to evaluate
+## the BSP rewrite. Off in normal builds, so it never affects output.
+var bsp_debug: bool = false
+## Filled by [method _bsp_debug_stats] so a harness can read the result back.
+var bsp_last = null
+const _KajmakBSPScript = preload("res://addons/kajmak/kajmak_bsp.gd")
 
 # A face is fully removed when its remaining area drops below this fraction of its
 # original area, and left untouched when coverage is below _OVERLAP_EPSILON.
@@ -66,7 +73,10 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 
 	# KAJMAK: global hidden-face culling pre-pass (runs single-threaded here, after
 	# all faces are wound and before parallel surface generation reads them).
-	if enable_cull:
+	if bsp_debug:
+		declare_step.emit("BSP debug stats")
+		_bsp_debug_stats()
+	elif enable_cull:
 		declare_step.emit("Culling hidden faces")
 		cull_hidden_faces()
 
@@ -238,6 +248,30 @@ func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Arra
 	if tri_area < face_area - summed_cover - face_area * 0.01 - 1.0e-5:
 		return false
 	return true
+
+# Dev only: gather solid occluder brushes (same gate as the culler) and build a
+# BSP from their planes, then leave the result in [member bsp_last] for a harness
+# to inspect. Does not touch any face, so the build output is unchanged.
+func _bsp_debug_stats() -> void:
+	var brushes: Array = []
+	var all_points := PackedVector3Array()
+	for entity_index in entity_data.size():
+		var entity: _EntityData = entity_data[entity_index]
+		if not _entity_renders(entity):
+			continue
+		for brush in entity.brushes:
+			if not _brush_has_solid_face(brush):
+				continue
+			var bounds := _brush_bounds(brush)
+			brushes.append({"planes": brush.planes, "inside": bounds[1]})
+			for face in brush.faces:
+				for vertex in face.vertices:
+					all_points.append(vertex)
+
+	var bsp := _KajmakBSPScript.new()
+	bsp.build(brushes, _aabb_of(all_points))
+	bsp_last = bsp
+	print("[KAJMAK BSP] brushes %d  %s" % [brushes.size(), bsp.stats_string()])
 
 #endregion
 
