@@ -105,7 +105,6 @@ func _build_toolbar() -> void:
 
 	_cancel_button = Button.new()
 	_cancel_button.text = "Cancel"
-	_cancel_button.set_theme_type_variation("FlatButton")  # flat, like the toolbar buttons
 	_cancel_button.pressed.connect(_on_cancel_pressed)
 	_toolbar.add_child(_cancel_button)
 
