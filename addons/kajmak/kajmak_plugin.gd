@@ -103,7 +103,7 @@ func _build_toolbar() -> void:
 func _toolbar_icon() -> Texture2D:
 	var theme := EditorInterface.get_editor_theme()
 	if theme:
-		for name in ["Bake", "Tools", "MeshInstance3D", "Progress1"]:
+		for name in ["MeshInstance3D", "Mesh", "Bake", "Tools"]:
 			if theme.has_icon(name, "EditorIcons"):
 				return theme.get_icon(name, "EditorIcons")
 	return null
