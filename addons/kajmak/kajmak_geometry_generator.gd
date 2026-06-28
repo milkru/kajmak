@@ -105,13 +105,16 @@ func cull_hidden_faces() -> void:
 				var bounds := _brush_bounds(brush)
 				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
 			for face in brush.faces:
-				# Covers/occluder faces: any solid surface (incl. skip).
+				# Covers/occluder faces: any solid surface (incl. skip). Snapshot the
+				# winding now: splitting later mutates face.vertices in place, and
+				# covers must reflect the ORIGINAL geometry, not a half-cut neighbour.
 				if _is_solid_face(face):
+					var entry := {"face": face, "verts": face.vertices.duplicate()}
 					var key := _plane_key(face.plane)
 					if bucket.has(key):
-						bucket[key].append(face)
+						bucket[key].append(entry)
 					else:
-						bucket[key] = [face]
+						bucket[key] = [entry]
 				# Candidates that can be culled/split: only rendered faces.
 				if _is_visual_face(face):
 					records.append({"entity": entity_index, "brush": brush, "face": face})
@@ -148,19 +151,27 @@ func cull_hidden_faces() -> void:
 		var v := u.cross(face.plane.normal).normalized()
 		var origin: Vector3 = face.plane.get_center()
 		var face_2d := _project_2d(face.vertices, origin, u, v)
+		if _signed_area_2d(face_2d) < 0.0:
+			face_2d.reverse()  # normalise to CCW so boolean ops are orientation-safe
 		var face_area := absf(_signed_area_2d(face_2d))
 		if face_area <= _OVERLAP_EPSILON:
 			continue
 
 		var covers: Array = []
-		for other_face: _FaceData in bucket[opposite_key]:
+		for other in bucket[opposite_key]:
+			var other_face: _FaceData = other["face"]
 			if other_face == face:
 				continue
 			if not (-face.plane.normal).is_equal_approx(other_face.plane.normal):
 				continue
 			if not other_face.plane.has_point(face.plane.get_center(), _COPLANAR_TOLERANCE):
 				continue
-			var other_2d := _project_2d(other_face.vertices, origin, u, v)
+			# Project the snapshot (original) winding, not the possibly-mutated live one.
+			var other_2d := _project_2d(other["verts"], origin, u, v)
+			# Opposite-facing faces project with reversed winding; normalise to CCW
+			# so the boolean ops below treat it as a solid region, not a hole.
+			if _signed_area_2d(other_2d) < 0.0:
+				other_2d.reverse()
 			if _intersection_area_2d(face_2d, other_2d) <= face_area * _OVERLAP_EPSILON:
 				continue
 			covers.append(other_2d)
