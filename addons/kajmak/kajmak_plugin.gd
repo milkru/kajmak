@@ -2,15 +2,12 @@
 class_name KajmakPlugin extends EditorPlugin
 ## Editor entry point for the Kajmak plugin.
 ##
-## Registers the [code]KajmakMap[/code] node type and drives the non-blocking
-## build: parse + geometry work runs on a worker thread while a small toolbar
-## (icon, status, elapsed time, Cancel) shows in the 3D viewport menu; node
-## assembly runs back on the main thread when the worker finishes.
+## Registers the [code]KajmakMap[/code] type and drives the non-blocking build: the
+## cull runs on a worker thread behind a small 3D-viewport toolbar (icon, status,
+## elapsed, Cancel), then node assembly finishes on the main thread.
 ##
-## Kajmak depends on the func_godot plugin (KajmakMap extends FuncGodotMap). This
-## script is deliberately written WITHOUT any compile-time reference to func_godot
-## or KajmakMap, so that when func_godot is missing it can still load, detect the
-## problem and show a clear message instead of failing with cryptic errors.
+## Written WITHOUT any compile-time reference to func_godot or KajmakMap, so that
+## when func_godot is missing it still loads and shows a clear message.
 
 const _FUNC_GODOT_CFG := "res://addons/func_godot/plugin.cfg"
 const _MAP_SCRIPT := "res://addons/kajmak/kajmak_map.gd"
@@ -39,8 +36,8 @@ func _handles(object: Object) -> bool:
 const _FUNC_GODOT_NAME := "func_godot"
 
 func _enter_tree() -> void:
-	# Kajmak needs func_godot both installed and enabled: its classes back KajmakMap
-	# and its plugin sets up the project settings and authoring pipeline we rely on.
+	# func_godot must be installed and enabled: its classes back KajmakMap and its
+	# plugin sets up the pipeline we rely on.
 	if not FileAccess.file_exists(_FUNC_GODOT_CFG):
 		_warn("Kajmak requires the func_godot plugin, which is not installed at addons/func_godot.\n\nInstall func_godot and enable it, then re-enable Kajmak.")
 		return
@@ -84,8 +81,7 @@ func _build_toolbar() -> void:
 	lead.custom_minimum_size = Vector2(6, 0)
 	_toolbar.add_child(lead)
 
-	# Size the icon to match the editor's built-in toolbar icons (the same size the
-	# bake button uses), reading it from the theme rather than hardcoding.
+	# Size the icon to the editor's built-in toolbar icons (the Bake button's size).
 	var icon_size := Vector2(16, 16) * EditorInterface.get_editor_scale()
 	var theme := EditorInterface.get_editor_theme()
 	if theme and theme.has_icon("Bake", "EditorIcons"):
@@ -116,9 +112,8 @@ func _build_toolbar() -> void:
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _toolbar)
 	_toolbar.visible = false
 
-# Grayscale icon for the progress toolbar: the func_godot slipgate symbol (same
-# family as the KajmakMap node icon, but the monochrome 2D variant rather than the
-# tinted 3D node one). Falls back to monochrome editor icons if it is ever missing.
+# Toolbar icon: the monochrome func_godot slipgate (same family as the node icon),
+# falling back to editor icons if it's missing.
 func _toolbar_icon() -> Texture2D:
 	const SLIPGATE := "res://addons/func_godot/icons/icon_slipgate.svg"
 	if ResourceLoader.exists(SLIPGATE):

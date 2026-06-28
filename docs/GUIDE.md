@@ -34,6 +34,10 @@ Here is how it works. Kajmak builds a small BSP out of all your solid brushes, w
 
 The hidden face pass runs first, then the exterior pass trims whatever is left down to its visible part, so the two passes stack cleanly. Both read each brush's interior point from a snapshot taken before any culling, so the order never corrupts either one.
 
+### Sealing an open map with skip
+
+The exterior pass only pays off when the level is actually closed, because the whole trick rests on the void outside being separate from the rooms inside. If your map is open to a skybox, or you just have not walled it off yet, the easy fix is to box it in with skip textured brushes. Skip faces never render, so they cost you nothing in game, but Kajmak still counts them as solid, which is exactly what the flood needs to keep the outside outside. Drop a big skip box around the playable area, or patch over the open bits, and the exterior pass has a sealed shell to work with. This is also the cleanest way to handle a map that is open on purpose, like a courtyard that looks out at a backdrop. Wall it off with skip behind the backdrop and you still get the culling.
+
 This pass works best on a sealed map. If there is a gap to the outside, the flood leaks in through it and marks interior cells as exterior, which would cull faces you actually see. Because Kajmak keeps any part of a face that still faces a room, a leak tends to nibble the edges of a few faces near the hole rather than gut a room. Still, treat a sudden missing wall as a sign of a leak and seal it. Turn on debug_log_pairs to see how many outside cells the flood found, a number far larger than you expect usually means it got out.
 
 ## Groups, linked groups, layers
@@ -56,6 +60,6 @@ Run the edge case corpus with Godot in headless mode against the test project:
 godot --headless --path external/func_godot_test_project --script res://dev/verify_corpus.gd
 ```
 
-There are also `verify_skeleton.gd` (proves culling off matches plain func_godot), `verify_cull.gd`, `verify_wedge.gd`, `verify_wedge_split.gd`, `verify_window.gd`, `verify_bsp.gd` (builds the exterior BSP and checks its solid and empty cells against a brute force point in brush test) and `verify_exterior.gd` (a sealed room and a leaky room, checks the void flood stays out of the sealed one and removes the outer shell). Each one builds a tiny map and checks the numbers, so if you change the culling code you can tell straight away whether you broke something.
+There are also `verify_skeleton.gd` (proves culling off matches plain func_godot), `verify_cull.gd`, `verify_wedge.gd`, `verify_wedge_split.gd`, `verify_window.gd`, `verify_bsp.gd` (builds the exterior BSP and checks its solid and empty cells against a brute force point in brush test) `verify_exterior.gd` (a sealed room and a leaky room, checks the void flood stays out of the sealed one and removes the outer shell) and `verify_flood.gd` (checks the BSP portal flood agrees with a brute force voxel flood, both directions). Each one builds a tiny map and checks the numbers, so if you change the culling code you can tell straight away whether you broke something.
 
 If you add a new tricky map case, make a small map under `dev/maps`, add an expected result to `verify_corpus.gd`, and it becomes a permanent guard.

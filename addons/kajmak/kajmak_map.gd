@@ -3,51 +3,40 @@
 class_name KajmakMap extends FuncGodotMap
 ## A [FuncGodotMap] that builds geometry through [KajmakGeometryGenerator].
 ##
-## Identical to [FuncGodotMap] except the geometry-generation step uses our
-## [KajmakGeometryGenerator] subclass. [FuncGodotMap.build] hardcodes
-## [code]FuncGodotGeometryGenerator.new(...)[/code], so we override [method build]
-## with a copy of that driver and swap in our generator.
-##
-## In the editor the build runs on a background thread with a small progress
-## toolbar (elapsed time + cancel), driven by [KajmakPlugin]. At runtime or in
-## headless tools it runs synchronously. Both paths share the same stages:
-## [method prepare_build] (main thread) -> [method generate_threaded] (any thread)
-## -> [method finish_build] (main thread).
+## [FuncGodotMap.build] hardcodes the generator, so we override [method build] with
+## a copy of its driver and swap ours in. In the editor [KajmakPlugin] runs it on a
+## worker thread with a progress toolbar; at runtime/headless it runs synchronously.
+## Both share the stages [method prepare_build] -> [method setup_generate] ->
+## [method run_cull] (any thread) -> [method finish_staged].
 
 const _KAJMAK_SIGNATURE: String = "[KAJMAK]"
 
-## Shared between the build thread and the editor UI: a cancel flag and the name
-## of the current step for the progress label.
+## Shared by the build thread and editor UI: a cancel flag and the current step name.
 class BuildState extends RefCounted:
 	var cancelled: bool = false
 	var step: String = ""
 
-## Factory so the plugin can make a state without naming the inner class (keeps the
-## plugin script free of any func_godot dependency at parse time).
+## Lets the plugin make a state without naming the inner class (keeps it func_godot-free).
 func make_build_state() -> BuildState:
 	return BuildState.new()
 
 @export_category("Kajmak")
-## When enabled, faces hidden behind adjacent solid geometry are culled at build
-## time (qbsp/vbsp-style). Disable to build identically to stock func_godot.
+## Cull faces hidden behind adjacent solid geometry (qbsp/vbsp-style). Off = builds
+## identically to stock func_godot.
 @export var cull_hidden_faces: bool = true
-## When enabled, faces that open onto the exterior void of a sealed map are culled
-## at build time, like a vis pass. Off by default and independent of
-## [member cull_hidden_faces]. Only safe on maps with no leaks to the outside.
+## Also cull faces opening onto the exterior void (vis-style). Independent of
+## [member cull_hidden_faces]; only safe on sealed maps with no leaks to the outside.
 @export var cull_exterior_faces: bool = false
-## Prints every detected coplanar/opposite overlapping face pair during the build.
+## Print each cull/split decision during the build.
 @export var debug_log_pairs: bool = false
 
-## Dev-only (not exported): when true, the generator builds a [KajmakBSP] from the
-## occluder brushes and prints its stats instead of culling. Used by the BSP
-## rewrite harness; leaves normal builds untouched.
+## Dev-only (BSP harness): build the occluder BSP and print stats instead of culling.
 var bsp_debug: bool = false
-## Dev-only: the BSP built during the last [code]bsp_debug[/code] build, for harnesses.
+## Dev-only: the BSP from the last [code]bsp_debug[/code] build.
 var bsp_last: Variant = null
 
-## Entry point (also the func_godot tool button target). In the editor with the
-## Kajmak plugin loaded, hand off to the threaded build UI; otherwise build
-## synchronously on the calling thread (runtime, headless tools, no plugin).
+## Entry point (and func_godot tool button target). In the editor with the plugin
+## loaded, hand off to the threaded build UI; otherwise build synchronously.
 func build() -> void:
 	if Engine.is_editor_hint() and Engine.has_meta("kajmak_build_ui"):
 		Engine.get_meta("kajmak_build_ui").request_build(self)
@@ -62,8 +51,7 @@ func build() -> void:
 			return
 		finish_staged(ctx)                 # surfaces + assemble (resources)
 
-## Main-thread setup: profile banner, clear old children, verify, settings. Returns
-## false if the build should not proceed.
+## Main-thread setup: profile banner, clear children, verify, settings. False = abort.
 func prepare_build() -> bool:
 	if build_flags & BuildFlags.SHOW_PROFILE_INFO:
 		FuncGodotUtil.print_profile_info("Building...", _KAJMAK_SIGNATURE)
@@ -80,9 +68,8 @@ func prepare_build() -> bool:
 		load(ProjectSettings.get_setting("func_godot/default_map_settings", "res://addons/func_godot/func_godot_default_map_settings.tres"))
 	return true
 
-## Stage 1 (MAIN thread): parse the map and run the generator's resource-touching
-## pre-cull phase (materials, vertices, winding). Returns a context dictionary
-## {generator, entities, groups} to carry to the later stages, or {} on failure.
+## Stage 1 (MAIN thread): parse the map and run the resource-touching pre-cull
+## (materials, vertices, winding). Returns {generator, entities, groups}, or {} on failure.
 func setup_generate(state: BuildState) -> Dictionary:
 	var profile: bool = build_flags & BuildFlags.SHOW_PROFILE_INFO
 
@@ -112,8 +99,8 @@ func setup_generate(state: BuildState) -> Dictionary:
 		return {}
 	return {"generator": generator, "entities": entities, "groups": groups}
 
-## Stage 2 (any thread): run the cull. Pure geometry math, no resource or scene
-## access, so the editor runs this on a worker thread. Returns false on cancel.
+## Stage 2 (any thread): the cull. Pure math, no resources, so it runs off the main
+## thread in the editor. False on cancel.
 func run_cull(ctx: Dictionary, state: BuildState) -> bool:
 	var generator: KajmakGeometryGenerator = ctx["generator"]
 	if generator.cull_step() != OK or state.cancelled:

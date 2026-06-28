@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://b2gnpu3ef3sfv"
+path="res://.godot/imported/roomleak.map-147044e0b07dbcc763d1e62e67700668.tres"
+
+[deps]
+
+source_file="res://dev/maps/roomleak.map"
+dest_files=["res://.godot/imported/roomleak.map-147044e0b07dbcc763d1e62e67700668.tres"]
+
+[params]
+

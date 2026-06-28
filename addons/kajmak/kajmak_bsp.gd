@@ -1,33 +1,21 @@
 @tool
 class_name KajmakBSP extends RefCounted
-## Solid-leaf BSP tree built from brush volumes.
+## Solid-leaf BSP tree built from brush volumes, for visible-surface culling.
 ##
-## Foundation for the BSP-based culling rewrite. The tree partitions space with
-## brush face planes and stops as soon as a cell is homogeneous: fully inside a
-## brush (a SOLID leaf) or outside every brush (an EMPTY leaf). That pruning is
-## what keeps the tree proportional to the surface complexity instead of blowing
-## up into the full plane arrangement.
-##
-## Each cell is represented purely as a list of half-space planes with INWARD
-## normals, so a point is inside the cell when [code]plane.distance_to(point) >=
-## -EPS[/code] for every cell plane. A cell's convex vertices are enumerated on
-## demand from those planes, giving exact plane-vs-cell classification and an
-## exact interior sample point without any global grid or fragile ray sampling.
-##
-## Brushes are passed with an interior point so the builder can orient each brush
-## plane to point outward (interior on the back side) regardless of the source
-## winding convention.
+## Splits space by brush planes and stops once a cell is homogeneous: inside a
+## brush (SOLID leaf) or outside every brush (EMPTY leaf). Cells are inward-normal
+## half-space lists; their convex corners are enumerated from the planes on demand,
+## giving exact classification without any grid or ray sampling. Each brush carries
+## an interior point so its planes can be oriented outward regardless of winding.
 
 const EPS := 0.001
 const _MAX_DEPTH := 256
 const _MAX_NODES := 1 << 18
 
-# Where a query plane sits relative to a convex cell, and how a brush sits.
+# Where a query plane sits relative to a convex cell.
 enum { _FRONT, _BACK, _STRADDLE }
-enum { _OUTSIDE, _INSIDE, _CROSS }
 
-## A node in the tree. Internal nodes carry a splitting [member plane] and two
-## children. Leaf nodes carry [member solid].
+## Internal nodes carry a split [member plane] and two children; leaves carry [member solid].
 class BSPNode extends RefCounted:
 	var plane: Plane          # splitting plane (internal nodes only)
 	var front: BSPNode = null    # cell on the positive side of plane
@@ -36,6 +24,7 @@ class BSPNode extends RefCounted:
 	var solid: bool = false   # leaf only
 	var exterior: bool = false # leaf only: empty and reachable from the outside void
 	var cell: Array = []      # leaf only: inward-normal half-spaces of the cell
+	var verts: PackedVector3Array = PackedVector3Array()  # leaf only: cached cell corners
 	var neighbors: Array = [] # leaf only: leaves sharing a portal (built on demand)
 	var depth: int = 0
 
@@ -51,8 +40,7 @@ var exterior_leaf_count: int = 0
 var _brushes: Array[Brush] = []
 var _root_cell: Array = []   # the grown root cell, kept for portalization
 var _grown: AABB             # the grown world bounds (root cell extent)
-## Optional cancel holder ([KajmakMap.BuildState]); set its cancelled flag to abort
-## the (potentially slow) tree build early.
+## Optional [KajmakMap.BuildState]; set its cancelled flag to abort the build early.
 var cancel_state: Variant = null
 
 # Stats, filled by build().
@@ -66,9 +54,8 @@ var build_msec: float = 0.0
 var aborted: bool = false
 
 
-## Build the tree. [param brushes] is an array of either [Brush] objects or
-## dictionaries [code]{planes: Array[Plane], inside: Vector3}[/code].
-## [param world_aabb] bounds the map; the root cell is this box grown slightly.
+## Build the tree. [param brushes] holds [Brush] objects or [code]{planes, inside}[/code]
+## dicts; the root cell is [param world_aabb] grown slightly.
 func build(brushes: Array, world_aabb: AABB) -> void:
 	var start := Time.get_ticks_usec()
 	bounds = world_aabb
@@ -91,7 +78,7 @@ func build(brushes: Array, world_aabb: AABB) -> void:
 	max_depth = 0
 	aborted = false
 	leaves.clear()
-	root = _build_node(cell, indices, 0)
+	root = _build_node(cell, _cell_vertices(cell), indices, 0)
 	build_msec = (Time.get_ticks_usec() - start) / 1000.0
 
 
@@ -117,60 +104,94 @@ func _ingest_brushes(brushes: Array) -> void:
 		_brushes.append(b)
 
 
-func _build_node(cell: Array, brush_indices: PackedInt32Array, depth: int) -> BSPNode:
+func _build_node(cell: Array, verts: PackedVector3Array, brush_indices: PackedInt32Array, depth: int) -> BSPNode:
 	node_count += 1
 	if depth > max_depth:
 		max_depth = depth
 
 	if cancel_state != null and cancel_state.cancelled:
-		return _make_leaf(false, depth, cell)  # abort: tree is discarded anyway
-
-	var verts := _cell_vertices(cell)
+		return _make_leaf(false, depth, cell, verts)  # abort: tree is discarded anyway
 	if verts.is_empty():
-		return _make_leaf(false, depth, cell)  # degenerate sliver: treat as empty
+		return _make_leaf(false, depth, cell, verts)  # degenerate sliver: treat as empty
 
-	# Classify each candidate brush against this cell. If the cell is fully inside
-	# any brush it is solid; brushes that miss the cell are dropped; the rest cross
-	# the cell boundary and keep it alive for splitting.
+	# One pass per brush, collecting its straddling planes as split candidates:
+	# inside any brush -> solid leaf, misses dropped, crossing brushes keep splitting.
 	var crossing := PackedInt32Array()
+	var candidates: Array[Plane] = []
 	for bi in brush_indices:
-		match _classify_brush(_brushes[bi], verts):
-			_INSIDE:
-				return _make_leaf(true, depth, cell)
-			_CROSS:
-				crossing.append(bi)
-			# _OUTSIDE: drop
+		var inside_all := true
+		var outside := false
+		var straddlers: Array[Plane] = []
+		for plane in _brushes[bi].planes:
+			match _classify(plane, verts):
+				_FRONT:
+					outside = true
+					break
+				_STRADDLE:
+					inside_all = false
+					straddlers.append(plane)
+		if outside:
+			continue
+		if inside_all:
+			return _make_leaf(true, depth, cell, verts)
+		crossing.append(bi)
+		candidates.append_array(straddlers)
 
 	if crossing.is_empty():
-		return _make_leaf(false, depth, cell)
+		return _make_leaf(false, depth, cell, verts)
 
 	if depth >= _MAX_DEPTH or node_count >= _MAX_NODES:
 		aborted = true
-		return _make_leaf(false, depth, cell)
+		return _make_leaf(false, depth, cell, verts)
 
-	var split := _pick_split(crossing, verts)
+	var split := _best_split(candidates, verts)
 	if split == null:
-		return _make_leaf(false, depth, cell)  # no plane actually cuts the cell
+		return _make_leaf(false, depth, cell, verts)  # no plane actually cuts the cell
 
+	var back_plane := Plane(-split.normal, -split.d)
 	var front_cell := cell.duplicate()
 	front_cell.append(split)
 	var back_cell := cell.duplicate()
-	back_cell.append(Plane(-split.normal, -split.d))
+	back_cell.append(back_plane)
 
 	var node := BSPNode.new()
 	node.plane = split
 	node.depth = depth
 	internal_count += 1
-	node.front = _build_node(front_cell, crossing, depth + 1)
-	node.back = _build_node(back_cell, crossing, depth + 1)
+	node.front = _build_node(front_cell, _child_vertices(verts, cell, split), crossing, depth + 1)
+	node.back = _build_node(back_cell, _child_vertices(verts, cell, back_plane), crossing, depth + 1)
 	return node
 
 
-func _make_leaf(solid: bool, depth: int, cell: Array) -> BSPNode:
+# Corners of a child cell (parent + new_plane): the parent corners in front of
+# new_plane, plus where new_plane meets each pair of parent planes. Same set as a
+# full re-enumeration, but O(n^2) instead of O(n^3).
+func _child_vertices(parent_verts: PackedVector3Array, parent_cell: Array, new_plane: Plane) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	for v in parent_verts:
+		if new_plane.distance_to(v) >= -EPS:
+			out.append(v)
+	var child_cell := parent_cell.duplicate()
+	child_cell.append(new_plane)
+	var n := parent_cell.size()
+	for a in range(n):
+		var pa: Plane = parent_cell[a]
+		for b in range(a + 1, n):
+			var p = pa.intersect_3(parent_cell[b], new_plane)
+			if p == null:
+				continue
+			var pt: Vector3 = p
+			if _inside_cell(pt, child_cell):
+				out.append(pt)
+	return out
+
+
+func _make_leaf(solid: bool, depth: int, cell: Array, verts: PackedVector3Array) -> BSPNode:
 	var node := BSPNode.new()
 	node.is_leaf = true
 	node.solid = solid
 	node.cell = cell
+	node.verts = verts
 	node.depth = depth
 	leaf_count += 1
 	if solid:
@@ -181,8 +202,7 @@ func _make_leaf(solid: bool, depth: int, cell: Array) -> BSPNode:
 	return node
 
 
-## Walk the tree to the leaf cell that contains [param point]. On-plane points
-## (within EPS) resolve to the front child deterministically.
+## Leaf cell containing [param point]; on-plane points resolve to the front child.
 func locate_leaf(point: Vector3) -> BSPNode:
 	var node := root
 	while node != null and not node.is_leaf:
@@ -202,10 +222,9 @@ func is_solid(point: Vector3) -> bool:
 #region EXTERIOR VOID FLOOD
 
 
-## Flood fill the empty leaves that connect to the outside void. Builds exact leaf
-## adjacency (BSP portals) once, seeds every empty leaf touching the outer bounds,
-## then floods through empty neighbours. After this [member BSPNode.exterior] is
-## true on every empty leaf reachable from outside without passing through solid.
+## Flood the empty leaves connected to the outside void. Builds portal adjacency,
+## seeds empty leaves touching the outer bounds, floods through empty neighbours;
+## leaves [member BSPNode.exterior] set on every leaf reachable without crossing solid.
 func mark_exterior() -> void:
 	_build_portals()
 	for leaf in leaves:
@@ -232,10 +251,9 @@ func mark_exterior() -> void:
 				queue.append(nb)
 
 
-# A leaf touches the outer void when one of its cell vertices lies on the grown
-# root box. The outer void always reaches that box, so these are the flood seeds.
+# A leaf seeds the flood when one of its corners lies on the grown root box.
 func _touches_outer(leaf: BSPNode, mn: Vector3, mx: Vector3) -> bool:
-	for p in _cell_vertices(leaf.cell):
+	for p in leaf.verts:
 		if (absf(p.x - mn.x) <= EPS or absf(p.x - mx.x) <= EPS
 				or absf(p.y - mn.y) <= EPS or absf(p.y - mx.y) <= EPS
 				or absf(p.z - mn.z) <= EPS or absf(p.z - mx.z) <= EPS):
@@ -245,10 +263,8 @@ func _touches_outer(leaf: BSPNode, mn: Vector3, mx: Vector3) -> bool:
 
 #region PORTALS (exact leaf adjacency)
 
-# Build adjacency between leaves that share a 2D face. For each internal node we
-# take its split plane clipped to the node's cell (the portal), push it down both
-# subtrees to the leaves it touches on each side, and link any front/back leaf
-# pair whose pieces overlap. This is exact, unlike point sampling.
+# Exact leaf adjacency: for each internal node, clip its split plane to the cell
+# (the portal), push it into both subtrees, and link overlapping front/back leaves.
 func _build_portals() -> void:
 	for leaf in leaves:
 		leaf.neighbors = []
@@ -276,8 +292,7 @@ func _portalize(node: BSPNode, cell: Array) -> void:
 	_portalize(node.back, bc)
 
 
-# Clip a coplanar polygon down a subtree, collecting [leaf, piece] for every leaf
-# the polygon reaches.
+# Clip a coplanar polygon down a subtree, collecting [leaf, piece] per leaf reached.
 func _gather_pieces(node: BSPNode, poly: PackedVector3Array, out: Array) -> void:
 	if poly.size() < 3:
 		return
@@ -295,8 +310,7 @@ func _link(a: BSPNode, b: BSPNode) -> void:
 		b.neighbors.append(a)
 
 
-# The cross-section polygon of a plane through a convex cell: a big quad on the
-# plane clipped by every (inward) cell plane.
+# Cross-section of a plane through a cell: a large quad on the plane clipped by every cell plane.
 func _plane_polygon(plane: Plane, cell: Array) -> PackedVector3Array:
 	var n := plane.normal
 	var ref := Vector3.UP if absf(n.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
@@ -365,31 +379,8 @@ func _polys_overlap(a: PackedVector3Array, b: PackedVector3Array, plane: Plane) 
 #endregion
 
 
-# Pure floating-point-noise tolerance (fraction of face area). Polygon clipping
-# can leave sub-pixel slivers; anything above this is treated as real area. This
-# is NOT a "how much is outside" gate.
-const _AREA_EPS := 1.0e-4
-
-## A face is culled by the exterior pass only when it fronts the void somewhere and
-## fronts NO interior (player-reachable) space at all. If even a sliver of the face
-## faces a room the player can be in, the whole face is kept (never half-culled).
-## The face polygon is pushed down the tree (at its own boundary plane it follows
-## [param normal] to the outward side, transverse planes split it) and the area
-## landing in exterior vs interior empty leaves is summed exactly.
-func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
-	if face_verts.size() < 3:
-		return false
-	var total := _poly_area(face_verts)
-	if total <= 0.0:
-		return false
-	var areas := _front_areas(root, face_verts, normal)  # x = exterior, y = interior
-	return areas.x > total * _AREA_EPS and areas.y <= total * _AREA_EPS
-
-
-## Convex fragments of a face polygon whose front does NOT open onto exterior void
-## (it faces interior space or solid). These are the parts to keep; everything else
-## of the face is void-facing and can be culled. Lets a partly-outside face be
-## trimmed to just its visible part instead of kept or dropped whole.
+## Fragments of the face whose front faces interior space or solid (the parts to
+## keep); the rest is void-facing. Lets a partly-outside face be trimmed, not dropped.
 func face_visible_fragments(face_verts: PackedVector3Array, normal: Vector3) -> Array:
 	var out: Array = []
 	if face_verts.size() >= 3:
@@ -428,64 +419,11 @@ func _collect_visible(node: BSPNode, poly: PackedVector3Array, normal: Vector3, 
 		_collect_visible(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal, out)
 
 
-## Fraction (0..1) of a face's area whose front lands in exterior empty leaves.
-func exterior_fraction(face_verts: PackedVector3Array, normal: Vector3) -> float:
-	if face_verts.size() < 3:
-		return 0.0
-	var total := _poly_area(face_verts)
-	if total <= 0.0:
-		return 0.0
-	return _front_areas(root, face_verts, normal).x / total
-
-
-# Area of the face polygon pieces that front exterior void (x) vs interior empty
-# space (y). Solid-fronted pieces contribute to neither.
-func _front_areas(node: BSPNode, poly: PackedVector3Array, normal: Vector3) -> Vector2:
-	if node == null or poly.size() < 3:
-		return Vector2.ZERO
-	if node.is_leaf:
-		if node.solid:
-			return Vector2.ZERO
-		return Vector2(_poly_area(poly), 0.0) if node.exterior else Vector2(0.0, _poly_area(poly))
-
-	var nf := 0
-	var nb := 0
-	for p in poly:
-		var d := node.plane.distance_to(p)
-		if d > EPS:
-			nf += 1
-		elif d < -EPS:
-			nb += 1
-
-	if nf == 0 and nb == 0:
-		# Coplanar with this split: the face lies on it, so follow the outward side.
-		if normal.dot(node.plane.normal) >= 0.0:
-			return _front_areas(node.front, poly, normal)
-		return _front_areas(node.back, poly, normal)
-	if nb == 0:
-		return _front_areas(node.front, poly, normal)
-	if nf == 0:
-		return _front_areas(node.back, poly, normal)
-
-	return (_front_areas(node.front, _clip_front(poly, node.plane), normal)
-			+ _front_areas(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal))
-
-
-# Area of a planar 3D polygon (Newell's method).
-func _poly_area(poly: PackedVector3Array) -> float:
-	var n := poly.size()
-	if n < 3:
-		return 0.0
-	var cross := Vector3.ZERO
-	for i in n:
-		cross += poly[i].cross(poly[(i + 1) % n])
-	return absf(cross.length()) * 0.5
-
 #endregion
 
 
-## Direct point-in-any-brush test, bypassing the tree. Ground truth for tests:
-## a point is solid iff it is behind every plane of some brush.
+## Point-in-any-brush test bypassing the tree (test ground truth): solid iff behind
+## every plane of some brush.
 func is_solid_bruteforce(point: Vector3) -> bool:
 	for brush in _brushes:
 		var inside := true
@@ -498,25 +436,11 @@ func is_solid_bruteforce(point: Vector3) -> bool:
 	return false
 
 
-# A brush's interior is the back side of all its (outward) planes. So the cell is
-# OUTSIDE the brush if any plane has the whole cell on its front side; INSIDE if
-# the whole cell is behind every plane; otherwise the boundary CROSSes the cell.
-func _classify_brush(brush: Brush, verts: PackedVector3Array) -> int:
-	var inside_all := true
-	for plane in brush.planes:
-		match _classify(plane, verts):
-			_FRONT:
-				return _OUTSIDE
-			_STRADDLE:
-				inside_all = false
-	return _INSIDE if inside_all else _CROSS
-
-
-# Choose a splitting plane from the crossing brushes' faces. Phase-1 heuristic:
-# among the brush planes that actually cut this cell, take the one passing closest
-# to the cell centroid, which tends to halve it. Fragment-aware scoring lands in a
-# later phase. Returns null if somehow none cut the cell.
-func _pick_split(crossing: PackedInt32Array, verts: PackedVector3Array) -> Variant:
+# Of the straddling candidate planes, the one passing closest to the cell centroid
+# (tends to halve it). Coplanar duplicates are folded; null if none cut the cell.
+func _best_split(candidates: Array[Plane], verts: PackedVector3Array) -> Variant:
+	if candidates.is_empty():
+		return null
 	var centroid := Vector3.ZERO
 	for v in verts:
 		centroid += v
@@ -525,22 +449,19 @@ func _pick_split(crossing: PackedInt32Array, verts: PackedVector3Array) -> Varia
 	var best: Variant = null
 	var best_dist := INF
 	var seen: Dictionary = {}
-	for bi in crossing:
-		for plane in _brushes[bi].planes:
-			if _classify(plane, verts) != _STRADDLE:
-				continue
-			var key := _plane_key(plane)
-			if seen.has(key):
-				continue
-			seen[key] = true
-			var d := absf(plane.distance_to(centroid))
-			if d < best_dist:
-				best_dist = d
-				best = plane
+	for plane in candidates:
+		var key := _plane_key(plane)
+		if seen.has(key):
+			continue
+		seen[key] = true
+		var d := absf(plane.distance_to(centroid))
+		if d < best_dist:
+			best_dist = d
+			best = plane
 	return best
 
 
-#region GEOMETRY PRIMITIVES (reused by later phases)
+#region GEOMETRY PRIMITIVES
 
 # Six inward-pointing half-space planes of an AABB.
 func _aabb_cell(box: AABB) -> Array:
@@ -556,9 +477,8 @@ func _aabb_cell(box: AABB) -> Array:
 	return cell
 
 
-# Enumerate the convex vertices of a cell given as inward-normal half-spaces.
-# Every triple of planes is intersected and the point kept when it lies inside
-# (or on) all planes. Small per cell, so the O(n^3) triple scan is cheap.
+# Convex corners of a cell: intersect every plane triple, keep points inside all
+# planes. Only used for the root; children derive theirs via _child_vertices.
 func _cell_vertices(cell: Array) -> PackedVector3Array:
 	var out := PackedVector3Array()
 	var n := cell.size()

@@ -1,50 +1,32 @@
 # kajmak
 
-Kajmak strips out the faces you never see from your func_godot maps.
+Kajmak removes the faces you never see from your func_godot maps.
 
-When you build a Quake style map with func_godot, every brush is a full solid box. Stack two boxes, push a pillar into a wall, glue a slab onto the floor, and the faces that end up buried inside other geometry still get built and drawn. You cannot see them but the GPU still pays for them. Kajmak finds those hidden faces while the map is building and removes them. When a face is only partly hidden it cuts out the covered part and keeps the rest, so a wall behind a small crate ends up with a neat hole exactly where the crate touches it.
+Build a Quake style map with func_godot and every brush is a solid box. Stack boxes, sink a pillar into a wall, drop a slab on the floor, and the buried faces still get built and drawn. You cannot see them, but the GPU still pays for them. While the map builds, Kajmak makes a BSP of your level and uses it to find those hidden faces and cut them out. When a face is only partly hidden, it trims the covered part and keeps the rest.
 
-This is the same idea the old Quake and Half Life compilers used when they carved brushes so nothing overlaps. func_godot does not do it, so Kajmak bolts it on as a small separate plugin. It never touches func_godot itself, so you can update func_godot whenever you want.
+It is the same trick the old Quake and Half Life compilers used. func_godot does not do it, so Kajmak adds it as a small separate plugin. It never touches func_godot itself, so you can update func_godot whenever you want.
 
 ![Example](https://github.com/milkru/data_resources/blob/main/kajmak.png "Example")
 
-## What it handles
-
-* Faces fully buried inside another solid brush get removed
-* Two faces flush back to back between touching brushes both get removed
-* A big face partly covered by smaller brushes gets split so only the visible part stays
-* Works across different brushes, different entities and different textures
-* Window frames and other shapes that leave a visible island in the middle keep that island
-* Skip textured faces still count as solid, so geometry behind them is culled too
-* Angled and offset brushes, not just axis aligned boxes
-
-Collision is untouched. Kajmak only removes visual surfaces.
-
 ## Install
 
-1. Copy the `addons/kajmak` folder into your project, right next to `addons/func_godot`.
-2. Open Project Settings, Plugins, and enable both FuncGodot and Kajmak.
-3. That is it.
+1. Copy `addons/kajmak` into your project, next to `addons/func_godot`.
+2. In Project Settings, Plugins, enable both FuncGodot and Kajmak.
 
 You need func_godot 2025.12 and Godot 4.5 or newer.
 
 ## Use it
 
-Instead of a `FuncGodotMap` node, drop in a `KajmakMap` node. It is a drop in replacement. Same map file, same map settings, same Build Map button. Point its Map Settings at the exact resource you already use, pick your map, and build. You get the same scene, just lighter.
-
-If you already have a scene with a `FuncGodotMap` node, the easiest move is to add a fresh `KajmakMap`, copy over the map file and map settings, and delete the old node.
+Drop in a `KajmakMap` node instead of a `FuncGodotMap` node. It is a drop in replacement: same map file, same map settings, same Build button. You get the same scene, just lighter.
 
 ## Options
 
 On the `KajmakMap` node, under the Kajmak category:
 
-* **cull_hidden_faces** On by default. Turn it off to build exactly like plain func_godot, which is handy if you ever want to compare.
-* **cull_exterior_faces** Off by default. Turn it on and Kajmak also removes the faces that face the empty void outside a sealed level, like the outer shell of your walls, floors and roof that the player never sees. It builds a little BSP of your solid brushes and floods the empty space from outside in, so anything the outside can reach is fair game. A face that is partly outside and partly facing a room is split, so only the outside part goes and the part you can see stays. If even a sliver of a face looks into a room you can stand in, that bit is kept. Works best on sealed maps. If there is a hole to the outside the flood leaks in and faces near the leak get kept, so nothing breaks, you just cull less. See the guide for how it works and how to spot leaks.
-* **debug_log_pairs** Off by default. Turn it on and rebuild to print what got removed and split to the Output panel. With exterior culling on it also prints how many outside leaves it found and how many faces it dropped or trimmed. Only useful when something looks off and you want to see what Kajmak noticed.
+* **cull_hidden_faces** (on) Removes faces hidden behind other solid brushes. Turn it off to build exactly like plain func_godot.
+* **cull_exterior_faces** (off) Also removes the outer shell that faces the empty void outside a sealed level. It floods the outside of the BSP and drops anything the outside can reach. Works best on sealed maps. To close an open map, wall it off with skip textured brushes: they never render but still count as solid, so they seal it for the flood while staying invisible in game.
+* **debug_log_pairs** (off) Prints what got removed or split to the Output panel.
 
-## What it does not do (yet)
+Collision is never touched. Kajmak only removes visual surfaces.
 
-* A brush floating fully inside another solid, with no shared flush face, is not culled. In practice you just avoid burying brushes like that.
-* Splitting a face leaves extra vertices on the cut edge but does not weld them to neighbours, so in theory you could see a hairline crack on very off grid geometry. It has not shown up in practice.
-
-There is more detail in [docs/GUIDE.md](docs/GUIDE.md).
+See [docs/GUIDE.md](docs/GUIDE.md) for how it works and how to spot leaks.

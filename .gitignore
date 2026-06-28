@@ -2,6 +2,11 @@
 dev/out/
 dev/maps/first.map
 dev/maps/first.map.import
+# Private working maps (not part of the committed corpus)
+dev/maps/first_test.map
+dev/maps/first_test.map.import
+dev/maps/qwe_*.map
+dev/maps/qwe_*.map.import
 dev/probe_*.gd
 dev/probe_*.gd.uid
 dev/capture.gd

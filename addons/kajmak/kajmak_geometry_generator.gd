@@ -1,28 +1,15 @@
 @tool
 class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
-## func_godot geometry generator with import-time hidden-face culling.
+## func_godot geometry generator with import-time visible-surface culling.
 ##
-## Subclasses [FuncGodotGeometryGenerator] to add a global, CSG-style hidden-face
-## culling pre-pass that reproduces qbsp/vbsp visible-surface behaviour at import
-## time, without modifying func_godot.
+## Adds a global hidden-face cull pre-pass (qbsp/vbsp-style) without touching
+## func_godot. It runs after winding and before surface generation, while faces are
+## still in shared id-space, so they compare directly across brushes and textures.
+## Buried faces are removed; faces partly covered by an opposite coplanar face are
+## split and the visible remainder re-triangulated.
 ##
-## The pre-pass runs after faces are wound (so windings exist) and before surface
-## generation. Because per-entity origin/OpenGL transforms are only applied later
-## (inside surface generation), every face's [code]vertices[/code]/[code]plane[/code]
-## are still in shared id-space here, so faces can be compared across brushes,
-## entities and textures directly.
-##
-## What it does:
-##   - Only renderable, solid brush faces participate (triggers, point entities,
-##     and skip/clip/origin faces are ignored as occluders and never culled).
-##   - Faces fully buried inside another solid brush volume are removed (handles
-##     flush back-to-back faces and fully-embedded brushes).
-##   - Faces partially covered by opposite coplanar faces are split: covered
-##     regions are subtracted in 2D and the visible remainder is re-triangulated.
-##
-## Not yet handled (see RESEARCH.md): T-junction welding, so split faces may leave
-## hairline cracks against un-split neighbours. Illusionary/liquid brushes that
-## render but should not occlude are currently treated as occluders.
+## Not handled (see RESEARCH.md): T-junction welding, so splits can leave hairline
+## cracks; illusionary/liquid brushes are treated as occluders.
 
 ## When false, builds identically to stock func_godot (regression escape hatch).
 var enable_cull: bool = true
@@ -31,36 +18,39 @@ var enable_cull: bool = true
 var cull_exterior: bool = false
 ## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
-## Dev hook: when set, build a [KajmakBSP] from the occluder brushes after winding
-## and print its stats instead of culling. Used by dev/verify_bsp.gd to evaluate
-## the BSP rewrite. Off in normal builds, so it never affects output.
+## Dev hook (dev/verify_bsp.gd): build the occluder BSP and print stats instead of
+## culling. Off in normal builds, so output is unchanged.
 var bsp_debug: bool = false
-## Filled by [method _bsp_debug_stats] so a harness can read the result back.
+## Filled by [method _bsp_debug_stats] for a harness to read back.
 var bsp_last: Variant = null
-## Optional [KajmakMap.BuildState] holder; when its [code]cancelled[/code] flag is
-## set (from the editor UI on the main thread) the build bails out early.
+## Optional [KajmakMap.BuildState]; set its cancelled flag to abort the build early.
 var cancel_state: Variant = null
 const _KajmakBSPScript = preload("res://addons/kajmak/kajmak_bsp.gd")
 
-# True when the editor has asked to cancel the in-progress build.
 func _cancelled() -> bool:
 	return cancel_state != null and cancel_state.cancelled
 
-# brush -> [AABB, interior_point], captured from original geometry before culling.
+# brush -> [AABB, interior_point], snapshotted from original geometry before culling.
 var _brush_orig: Dictionary = {}
 
-# A face is fully removed when its remaining area drops below this fraction of its
-# original area, and left untouched when coverage is below _OVERLAP_EPSILON.
+# Hidden-pass coverage thresholds (fraction of face area): a face is removed below
+# _FULL_COVERAGE_EPSILON remaining and left whole below _OVERLAP_EPSILON covered.
 const _FULL_COVERAGE_EPSILON := 1.0e-3
 const _OVERLAP_EPSILON := 1.0e-4
 const _COPLANAR_TOLERANCE := 0.001
 const _DEDUP_PRECISION := 1024.0
-# Distance tolerance (Godot units) for point-in-brush-volume tests.
-const _VOLUME_TOLERANCE := 0.001
+const _VOLUME_TOLERANCE := 0.001  # point-in-brush distance tolerance (Godot units)
+# Exterior pass (fraction of face area): below _EXTERIOR_AREA_EPS fronting interior
+# is removed, above (1 - it) is kept whole, between is trimmed; _DEGENERATE_AREA
+# drops slivers. A noise floor, NOT a coverage gate.
+const _EXTERIOR_AREA_EPS := 1.0e-4
+const _DEGENERATE_AREA := 1.0e-9
+# Reject a merged exterior triangulation (use the fan fallback) when its area drifts
+# from the kept area by more than this fraction.
+const _TRIANGULATION_AREA_TOLERANCE := 0.02
 
-# Full synchronous build (runtime, headless tools). The editor instead calls the
-# three phases below separately so only the cull (pure CPU math) runs on a worker
-# thread while the resource-touching phases stay on the main thread.
+# Full synchronous build (runtime, headless). The editor calls the three phases
+# separately so only the cull runs on a worker thread.
 func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 	var err := generate_pre_cull(entities)
 	if err != OK:
@@ -96,16 +86,15 @@ func generate_pre_cull(entities: Array[_EntityData]) -> Error:
 	WorkerThreadPool.wait_for_group_task_completion(task_id)
 	return OK
 
-## Phase 2 (any thread): the hidden-face and exterior culling. Pure geometry math
-## on face data, no resource or scene access, so it is safe to run on a worker
-## thread and is the slow part we want off the main thread.
+## Phase 2 (any thread): hidden-face and exterior culling. Pure face math, no
+## resources or scene access, so the editor runs it off the main thread.
 func cull_step() -> Error:
 	if _cancelled():
 		return FAILED
 
-	# Snapshot each brush's original bounds + interior point before any face is
-	# culled. Both passes need a stable interior point to orient their inside/outside
-	# tests; recomputing it after one pass erased faces would corrupt the other.
+	# Snapshot each brush's bounds + interior point before culling: both passes need
+	# a stable interior point, and recomputing it after one pass erased faces would
+	# corrupt the other.
 	if bsp_debug or cull_exterior or enable_cull:
 		_snapshot_brushes()
 
@@ -113,8 +102,7 @@ func cull_step() -> Error:
 		declare_step.emit("BSP debug stats")
 		_bsp_debug_stats()
 	else:
-		# Hidden-face culling runs first, then exterior culling trims whatever
-		# remains down to its visible (non-void-facing) parts.
+		# Hidden faces first, then exterior trims whatever remains to its visible parts.
 		if enable_cull:
 			declare_step.emit("Culling hidden faces")
 			cull_hidden_faces()
@@ -126,8 +114,7 @@ func cull_step() -> Error:
 		return FAILED
 	return OK
 
-## Phase 3 (MAIN thread): surface generation + UV2 unwrap. Creates mesh resources,
-## so it must run on the main thread.
+## Phase 3 (MAIN thread): surface generation + UV2 unwrap (creates mesh resources).
 func generate_post_cull(build_flags: int) -> Error:
 	var entity_count: int = entity_data.size()
 	declare_step.emit("Generating surfaces")
@@ -145,9 +132,8 @@ func generate_post_cull(build_flags: int) -> Error:
 
 #region HIDDEN-FACE CULLING
 
-# Record every solid brush's original AABB and interior point before any face is
-# culled, so both passes orient their volume tests from a point guaranteed to be
-# inside the brush regardless of which pass runs first.
+# Record each solid brush's AABB + interior point before culling, so both passes
+# orient their volume tests from a point that is inside whichever runs first.
 func _snapshot_brushes() -> void:
 	_brush_orig.clear()
 	for entity in entity_data:
@@ -157,14 +143,12 @@ func _snapshot_brushes() -> void:
 			if _brush_has_solid_face(brush):
 				_brush_orig[brush] = _brush_bounds(brush)
 
-# Original [AABB, interior] for a brush, falling back to current geometry if it
-# was not snapshotted (should not happen for solid brushes).
+# Snapshotted [AABB, interior] for a brush, falling back to live geometry.
 func _brush_origin_bounds(brush: _BrushData) -> Array:
 	return _brush_orig.get(brush, _brush_bounds(brush))
 
-## Global pre-pass. Builds the set of solid occluder brushes and renderable
-## candidate faces, removes faces buried inside another solid, and splits faces
-## partially covered by opposite coplanar faces.
+## Remove faces buried inside another solid brush, and split faces partly covered
+## by an opposite coplanar face down to their visible remainder.
 func cull_hidden_faces() -> void:
 	var occluders: Array = []   # {brush, aabb, centroid}
 	var records: Array = []     # {entity, brush, face}
@@ -175,16 +159,13 @@ func cull_hidden_faces() -> void:
 		if not _entity_renders(entity):
 			continue
 		for brush in entity.brushes:
-			# A brush occludes if it is solid (has any non-clip/non-origin face),
-			# which includes skip-textured faces: those are invisible but still
-			# solid surfaces that hide geometry behind them.
+			# Solid (any non-clip/non-origin face, including skip) brushes occlude.
 			if _brush_has_solid_face(brush):
 				var bounds := _brush_origin_bounds(brush)
 				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
 			for face in brush.faces:
-				# Covers/occluder faces: any solid surface (incl. skip). Snapshot the
-				# winding now: splitting later mutates face.vertices in place, and
-				# covers must reflect the ORIGINAL geometry, not a half-cut neighbour.
+				# Snapshot the cover winding now: splitting mutates face.vertices, and
+				# covers must reflect the original geometry, not a half-cut neighbour.
 				if _is_solid_face(face):
 					var entry := {"face": face, "verts": face.vertices.duplicate()}
 					var key := _plane_key(face.plane)
@@ -291,11 +272,10 @@ func cull_hidden_faces() -> void:
 	if debug_log_pairs:
 		print("[KAJMAK] removed %d face(s), split %d face(s)" % [to_remove.size(), split_count])
 
-# Validate a split triangulation without relying on exact boolean areas (which are
-# unreliable when covers overlap). Every triangle must lie in the visible region
-# (centroid inside the face and outside every cover); the total must not exceed the
-# face; and it must cover at least the area that is guaranteed visible (the face
-# minus the summed cover area — a safe lower bound). A failure keeps the face whole.
+# Validate a split without trusting boolean areas (unreliable when covers overlap):
+# every triangle centroid must be inside the face and outside all covers, the total
+# must not exceed the face, and must cover at least (face - summed covers). On
+# failure the face is kept whole.
 func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Array, triangles: PackedVector2Array) -> bool:
 	if triangles.is_empty():
 		return false
@@ -320,9 +300,8 @@ func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Arra
 		return false
 	return true
 
-# Build a BSP from the original solid occluder brushes (from the snapshot, so a
-# prior cull pass erasing faces cannot unseal the world). Each brush is passed
-# with its interior point so the BSP can orient its planes consistently.
+# BSP over the snapshotted occluder brushes (so a prior pass erasing faces cannot
+# unseal the world), each with its interior point for consistent plane orientation.
 func _build_occluder_bsp():
 	var brushes: Array = []
 	var world := AABB()
@@ -341,11 +320,9 @@ func _build_occluder_bsp():
 	bsp.build(brushes, world)
 	return bsp
 
-# Trim faces down to the parts the player can actually see. Builds the BSP, floods
-# the empty space connected to the outside, then for each face keeps only the
-# fragments whose front faces interior space or solid, dropping the parts that
-# front the exterior void. A face fully facing the void is removed; one partly
-# outside is split and rebuilt to just its visible region.
+# Trim faces to their visible parts: flood the outside void, then per face keep only
+# the fragments fronting interior space or solid. Fully void-facing -> removed,
+# partly outside -> rebuilt to its visible region.
 func cull_exterior_faces() -> void:
 	var bsp: Variant = _build_occluder_bsp()
 	bsp.mark_exterior()
@@ -358,8 +335,7 @@ func cull_exterior_faces() -> void:
 		if not _entity_renders(entity):
 			continue
 		for brush in entity.brushes:
-			# Brush centroid is the reference for "outward" so we never trust a face
-			# plane that happens to point the wrong way.
+			# Outward is judged against the brush centroid, not the face plane's sign.
 			var brush_centroid: Vector3 = _brush_origin_bounds(brush)[1]
 			if _cancelled():
 				return
@@ -389,23 +365,22 @@ func cull_exterior_faces() -> void:
 						if _signed_area_2d(f2d) < 0.0:
 							f2d.reverse()
 						var fa := absf(_signed_area_2d(f2d))
-						if fa <= 1.0e-9:
+						if fa <= _DEGENERATE_AREA:
 							continue
 						fragments.append(f2d)
 						keep_area += fa
 
 				if total_area <= 0.0:
 					continue
-				if keep_area <= total_area * 1.0e-4:
+				if keep_area <= total_area * _EXTERIOR_AREA_EPS:
 					to_remove.append([brush, face])
 					if debug_log_pairs:
 						print("[KAJMAK] e%d '%s' faces void -> removed" % [entity_index, face.texture])
-				elif keep_area < total_area * (1.0 - 1.0e-4):
-					# Merge the visible fragments into as few polygons as possible, then
-					# triangulate, so a trimmed face does not explode into slivers. Fall
-					# back to a per-fragment fan if the merged triangulation looks wrong.
+				elif keep_area < total_area * (1.0 - _EXTERIOR_AREA_EPS):
+					# Merge the fragments before triangulating so a trim doesn't shatter
+					# into slivers; fall back to a fan if the merge looks wrong.
 					var tris := _exterior_triangulate(fragments)
-					if tris.is_empty() or absf(_tris_area(tris) - keep_area) > keep_area * 0.02:
+					if tris.is_empty() or absf(_tris_area(tris) - keep_area) > keep_area * _TRIANGULATION_AREA_TOLERANCE:
 						tris = _fan_triangulate(fragments)
 					rebuilds.append([face, tris, origin, u, v])
 					trimmed += 1
@@ -439,9 +414,8 @@ func _face_triangles_3d(face: _FaceData) -> Array:
 # Above this many fragments, merging is not worth the cost; fall back to a fan.
 const _MERGE_FRAGMENT_CAP := 48
 
-# Merge connected coplanar visible fragments and triangulate each resulting
-# polygon with ear clipping, so a trimmed face stays as few triangles as it can.
-# Returns flat CCW 2D triangle triples, or empty to signal "use the fallback".
+# Merge connected fragments and ear-clip each, keeping a trimmed face to few
+# triangles. Returns flat CCW triangle triples, or empty to signal the fallback.
 func _exterior_triangulate(fragments: Array) -> PackedVector2Array:
 	if fragments.size() > _MERGE_FRAGMENT_CAP:
 		return PackedVector2Array()
@@ -494,8 +468,7 @@ func _tris_area(tris: PackedVector2Array) -> float:
 		area += absf(_triangle_signed_area(tris[t], tris[t + 1], tris[t + 2]))
 	return area
 
-# Dev only: build the occluder BSP and leave it in [member bsp_last] for a harness
-# to inspect. Does not touch any face, so the build output is unchanged.
+# Dev only: build the occluder BSP into [member bsp_last] for a harness; touches no face.
 func _bsp_debug_stats() -> void:
 	var bsp: Variant = _build_occluder_bsp()
 	bsp.mark_exterior()
@@ -506,9 +479,8 @@ func _bsp_debug_stats() -> void:
 
 #region OCCLUDER / FACE CLASSIFICATION
 
-# Mirrors func_godot's surface-generation gate: a face renders only when its
-# entity has brushes and is a solid class that builds visuals (or has no solid
-# definition, which func_godot treats as a default visual solid).
+# Mirrors func_godot's render gate: a solid class that builds visuals, or any
+# brush entity without a solid definition (func_godot's default visual solid).
 func _entity_renders(entity: _EntityData) -> bool:
 	if not entity or entity.brushes.is_empty():
 		return false
@@ -558,9 +530,8 @@ func _brush_bounds(brush: _BrushData) -> Array:
 	var centroid := sum / float(count) if count > 0 else Vector3.ZERO
 	return [AABB(mins, maxs - mins), centroid]
 
-# True when every point lies inside (or on) a convex brush volume. Works for
-# either plane-normal orientation by comparing each point against the side the
-# brush centroid is on.
+# True when every point is inside the convex brush, judging each plane's interior
+# side by where the centroid sits (so plane orientation doesn't matter).
 func _points_inside_brush(points: PackedVector3Array, planes: Array[Plane], centroid: Vector3) -> bool:
 	for plane in planes:
 		var centroid_dist := plane.distance_to(centroid)
@@ -601,9 +572,8 @@ func _aabb_of(points: PackedVector3Array) -> AABB:
 
 #region MESH REBUILD
 
-# Replace a face's geometry with the given list of 2D triangles (flat triples in
-# the (u, v) plane), lifted back to 3D. Rebuilds vertices, indices, normals and
-# tangents; UVs are recomputed from position during surface generation.
+# Replace a face's geometry with 2D triangles (flat (u,v) triples) lifted to 3D,
+# rebuilding vertices/indices/normals/tangents; UVs come later from position.
 func _rebuild_face(face: _FaceData, triangles: PackedVector2Array, origin: Vector3, u: Vector3, v: Vector3) -> void:
 	var vertices := PackedVector3Array()
 	var indices := PackedInt32Array()
@@ -678,9 +648,8 @@ func _intersection_area_2d(a: PackedVector2Array, b: PackedVector2Array) -> floa
 		area += absf(_signed_area_2d(poly))
 	return area
 
-# Union together any cover polygons that are connected (overlapping OR merely
-# touching), so the later subtraction produces clean, non-overlapping holes. Two
-# covers are merged when their union is a single ring; disjoint covers are kept.
+# Union connected covers (so subtraction yields clean holes), but only when the
+# union is a single hole-free ring; disjoint covers stay separate.
 func _merge_overlapping(covers: Array) -> Array:
 	var result: Array = covers.duplicate()
 	var merged_any := true
@@ -695,9 +664,8 @@ func _merge_overlapping(covers: Array) -> Array:
 				for poly in merged:
 					if Geometry2D.is_polygon_clockwise(poly):
 						hole_count += 1
-				# Only merge when the union is a single hole-free polygon. If merging
-				# would create a hole (e.g. four window-frame bars forming a ring), keep
-				# the covers separate so the enclosed island of the face survives.
+				# Merging covers into a ring (e.g. window-frame bars) would create a
+				# hole and swallow the enclosed island, so keep those separate.
 				if merged.size() == 1 and hole_count == 0:
 					result[i] = merged[0]
 					result.remove_at(j)
@@ -707,10 +675,8 @@ func _merge_overlapping(covers: Array) -> Array:
 			i += 1
 	return result
 
-# Subtract a set of clip polygons from a subject polygon. Returns
-# {outers: Array[PackedVector2Array], holes: Array[PackedVector2Array]}.
-# Only solid outer rings are fed back into successive subtractions; holes are
-# accumulated for later hole-aware triangulation.
+# Subtract clip polygons from a subject, returning {outers, holes}. Only outer rings
+# feed the next subtraction; holes are kept for hole-aware triangulation.
 func _subtract(subject: PackedVector2Array, clips: Array) -> Dictionary:
 	var outers: Array = [subject]
 	var holes: Array = []
@@ -736,8 +702,7 @@ func _region_area(region: Dictionary) -> float:
 		area -= absf(_signed_area_2d(hole))
 	return maxf(area, 0.0)
 
-# Triangulate a {outers, holes} region into a flat list of 2D triangle triples,
-# each enforced counter-clockwise so lifted triangles stay front-facing.
+# Signed area of a triangle (positive = counter-clockwise in the u,v frame).
 func _triangle_signed_area(a: Vector2, b: Vector2, c: Vector2) -> float:
 	return ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5
 
@@ -762,16 +727,7 @@ func _triangulate_region(region: Dictionary) -> PackedVector2Array:
 				my_holes.append(hole)
 		var tris := _earcut(outer, my_holes)
 		for t in range(0, tris.size(), 3):
-			var a := tris[t]
-			var b := tris[t + 1]
-			var c := tris[t + 2]
-			if _triangle_signed_area(a, b, c) < 0.0:
-				var s := b
-				b = c
-				c = s
-			out.append(a)
-			out.append(b)
-			out.append(c)
+			_append_ccw(out, tris[t], tris[t + 1], tris[t + 2])
 	return out
 
 #endregion
