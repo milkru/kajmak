@@ -39,6 +39,9 @@ var bsp_debug: bool = false
 var bsp_last: Variant = null
 const _KajmakBSPScript = preload("res://addons/kajmak/kajmak_bsp.gd")
 
+# brush -> [AABB, interior_point], captured from original geometry before culling.
+var _brush_orig: Dictionary = {}
+
 # A face is fully removed when its remaining area drops below this fraction of its
 # original area, and left untouched when coverage is below _OVERLAP_EPSILON.
 const _FULL_COVERAGE_EPSILON := 1.0e-3
@@ -76,12 +79,20 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 
 	# KAJMAK: global hidden-face culling pre-pass (runs single-threaded here, after
 	# all faces are wound and before parallel surface generation reads them).
+	# Snapshot each brush's original bounds + interior point now, while every face
+	# is still present. Both cull passes need a stable interior point to orient
+	# their inside/outside tests; recomputing it after one pass has erased faces
+	# would shift it outside the brush and corrupt the other pass.
+	if bsp_debug or cull_exterior or enable_cull:
+		_snapshot_brushes()
+
 	if bsp_debug:
 		declare_step.emit("BSP debug stats")
 		_bsp_debug_stats()
 	else:
 		# Exterior void culling runs first on pristine faces, then hidden-face
-		# culling splits whatever remains.
+		# culling splits whatever remains. Both read brush interiors from the
+		# snapshot, so the order does not corrupt either one.
 		if cull_exterior:
 			declare_step.emit("Culling exterior faces")
 			cull_exterior_faces()
@@ -104,6 +115,23 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 
 #region HIDDEN-FACE CULLING
 
+# Record every solid brush's original AABB and interior point before any face is
+# culled, so both passes orient their volume tests from a point guaranteed to be
+# inside the brush regardless of which pass runs first.
+func _snapshot_brushes() -> void:
+	_brush_orig.clear()
+	for entity in entity_data:
+		if not _entity_renders(entity):
+			continue
+		for brush in entity.brushes:
+			if _brush_has_solid_face(brush):
+				_brush_orig[brush] = _brush_bounds(brush)
+
+# Original [AABB, interior] for a brush, falling back to current geometry if it
+# was not snapshotted (should not happen for solid brushes).
+func _brush_origin_bounds(brush: _BrushData) -> Array:
+	return _brush_orig.get(brush, _brush_bounds(brush))
+
 ## Global pre-pass. Builds the set of solid occluder brushes and renderable
 ## candidate faces, removes faces buried inside another solid, and splits faces
 ## partially covered by opposite coplanar faces.
@@ -121,7 +149,7 @@ func cull_hidden_faces() -> void:
 			# which includes skip-textured faces: those are invisible but still
 			# solid surfaces that hide geometry behind them.
 			if _brush_has_solid_face(brush):
-				var bounds := _brush_bounds(brush)
+				var bounds := _brush_origin_bounds(brush)
 				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
 			for face in brush.faces:
 				# Covers/occluder faces: any solid surface (incl. skip). Snapshot the
@@ -271,7 +299,7 @@ func _build_occluder_bsp():
 		for brush in entity.brushes:
 			if not _brush_has_solid_face(brush):
 				continue
-			var bounds := _brush_bounds(brush)
+			var bounds := _brush_origin_bounds(brush)
 			brushes.append({"planes": brush.planes, "inside": bounds[1]})
 			for face in brush.faces:
 				for vertex in face.vertices:
@@ -297,7 +325,7 @@ func cull_exterior_faces() -> void:
 		for brush in entity.brushes:
 			# Brush centroid is the reference for "outward" so we never trust a face
 			# plane that happens to point the wrong way.
-			var brush_centroid: Vector3 = _brush_bounds(brush)[1]
+			var brush_centroid: Vector3 = _brush_origin_bounds(brush)[1]
 			for face in brush.faces:
 				if not _is_visual_face(face):
 					continue
