@@ -195,10 +195,6 @@ func is_solid(point: Vector3) -> bool:
 
 #region EXTERIOR VOID FLOOD
 
-# How far in front of a face to sample when testing it, and how far to pull a
-# sample toward the face centroid so it never sits exactly on an edge.
-const _FRONT_STEP := EPS * 16.0
-const _INSET := 0.02
 
 ## Flood fill the empty leaves that connect to the outside void. Builds exact leaf
 ## adjacency (BSP portals) once, seeds every empty leaf touching the outer bounds,
@@ -363,30 +359,46 @@ func _polys_overlap(a: PackedVector3Array, b: PackedVector3Array, plane: Plane) 
 #endregion
 
 
-## True when the space directly in front of a face is exterior void. Samples just
-## off the face along [param normal] at its centroid and inset corners; returns
-## true only if every sample lands in an exterior empty leaf, so a face that is
-## partly facing an interior space is kept whole.
+## True when any part of the space directly in front of a face opens onto the
+## exterior void. The face polygon is pushed down the tree: at its own boundary
+## plane it follows [param normal] to the outward side, transverse planes split
+## it, and it ends at the leaves sitting just in front of the face. If any of
+## those is an exterior empty leaf the face can see the void. This is exact, so a
+## partially covered face is still culled when its exposed part sees out.
 func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
 	if face_verts.size() < 3:
 		return false
-	for sample: Vector3 in _front_samples(face_verts, normal):
-		var leaf := locate_leaf(sample)
-		if leaf == null or leaf.solid or not leaf.exterior:
-			return false
-	return true
+	return _sees_exterior(root, face_verts, normal)
 
 
-func _front_samples(face_verts: PackedVector3Array, normal: Vector3) -> PackedVector3Array:
-	var centroid := Vector3.ZERO
-	for v in face_verts:
-		centroid += v
-	centroid /= float(face_verts.size())
-	var out := PackedVector3Array()
-	out.append(centroid + normal * _FRONT_STEP)
-	for v in face_verts:
-		out.append(v.lerp(centroid, _INSET) + normal * _FRONT_STEP)
-	return out
+func _sees_exterior(node: BSPNode, poly: PackedVector3Array, normal: Vector3) -> bool:
+	if node == null or poly.size() < 3:
+		return false
+	if node.is_leaf:
+		return not node.solid and node.exterior
+
+	var nf := 0
+	var nb := 0
+	for p in poly:
+		var d := node.plane.distance_to(p)
+		if d > EPS:
+			nf += 1
+		elif d < -EPS:
+			nb += 1
+
+	if nf == 0 and nb == 0:
+		# Coplanar with this split: the face lies on it, so follow the outward side.
+		if normal.dot(node.plane.normal) >= 0.0:
+			return _sees_exterior(node.front, poly, normal)
+		return _sees_exterior(node.back, poly, normal)
+	if nb == 0:
+		return _sees_exterior(node.front, poly, normal)
+	if nf == 0:
+		return _sees_exterior(node.back, poly, normal)
+
+	if _sees_exterior(node.front, _clip_front(poly, node.plane), normal):
+		return true
+	return _sees_exterior(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal)
 
 #endregion
 
