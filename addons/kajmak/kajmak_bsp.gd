@@ -359,23 +359,32 @@ func _polys_overlap(a: PackedVector3Array, b: PackedVector3Array, plane: Plane) 
 #endregion
 
 
-## True when any part of the space directly in front of a face opens onto the
-## exterior void. The face polygon is pushed down the tree: at its own boundary
-## plane it follows [param normal] to the outward side, transverse planes split
-## it, and it ends at the leaves sitting just in front of the face. If any of
-## those is an exterior empty leaf the face can see the void. This is exact, so a
-## partially covered face is still culled when its exposed part sees out.
+# A face is culled only when at least this fraction of its area faces the void.
+# A big interior face that only grazes an opening at one corner is well under this
+# and is kept; a face that is mostly exposed is culled.
+const _EXTERIOR_FRACTION := 0.5
+
+## True when most of the face fronts exterior void. The face polygon is pushed
+## down the tree (at its own boundary plane it follows [param normal] to the
+## outward side, transverse planes split it) and the area of the pieces that land
+## in exterior empty leaves is summed. We cull when that area is at least
+## [constant _EXTERIOR_FRACTION] of the whole face, so a mostly-interior face that
+## only touches an opening with a sliver is kept.
 func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
 	if face_verts.size() < 3:
 		return false
-	return _sees_exterior(root, face_verts, normal)
-
-
-func _sees_exterior(node: BSPNode, poly: PackedVector3Array, normal: Vector3) -> bool:
-	if node == null or poly.size() < 3:
+	var total := _poly_area(face_verts)
+	if total <= 0.0:
 		return false
+	return _exterior_area(root, face_verts, normal) >= total * _EXTERIOR_FRACTION
+
+
+# Sum the area of the face polygon pieces that front an exterior empty leaf.
+func _exterior_area(node: BSPNode, poly: PackedVector3Array, normal: Vector3) -> float:
+	if node == null or poly.size() < 3:
+		return 0.0
 	if node.is_leaf:
-		return not node.solid and node.exterior
+		return _poly_area(poly) if (not node.solid and node.exterior) else 0.0
 
 	var nf := 0
 	var nb := 0
@@ -389,16 +398,26 @@ func _sees_exterior(node: BSPNode, poly: PackedVector3Array, normal: Vector3) ->
 	if nf == 0 and nb == 0:
 		# Coplanar with this split: the face lies on it, so follow the outward side.
 		if normal.dot(node.plane.normal) >= 0.0:
-			return _sees_exterior(node.front, poly, normal)
-		return _sees_exterior(node.back, poly, normal)
+			return _exterior_area(node.front, poly, normal)
+		return _exterior_area(node.back, poly, normal)
 	if nb == 0:
-		return _sees_exterior(node.front, poly, normal)
+		return _exterior_area(node.front, poly, normal)
 	if nf == 0:
-		return _sees_exterior(node.back, poly, normal)
+		return _exterior_area(node.back, poly, normal)
 
-	if _sees_exterior(node.front, _clip_front(poly, node.plane), normal):
-		return true
-	return _sees_exterior(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal)
+	return (_exterior_area(node.front, _clip_front(poly, node.plane), normal)
+			+ _exterior_area(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal))
+
+
+# Area of a planar 3D polygon (Newell's method).
+func _poly_area(poly: PackedVector3Array) -> float:
+	var n := poly.size()
+	if n < 3:
+		return 0.0
+	var cross := Vector3.ZERO
+	for i in n:
+		cross += poly[i].cross(poly[(i + 1) % n])
+	return absf(cross.length()) * 0.5
 
 #endregion
 
