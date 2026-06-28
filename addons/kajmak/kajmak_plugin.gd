@@ -30,7 +30,7 @@ var _start_ms: int = 0
 var _building: bool = false
 
 func _get_plugin_name() -> String:
-	return "Kajmak"
+	return "kajmak"
 
 func _handles(object: Object) -> bool:
 	return _map_script != null and is_instance_valid(object) and object.get_script() == _map_script
