@@ -82,8 +82,12 @@ func _build_toolbar() -> void:
 
 	var icon := TextureRect.new()
 	icon.texture = _toolbar_icon()
+	# Ignore the texture's (large) native size and render it at a fixed 16x16 so it
+	# does not balloon to the toolbar row height.
+	icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	icon.custom_minimum_size = Vector2(16, 16)
+	icon.custom_minimum_size = Vector2(16, 16) * EditorInterface.get_editor_scale()
+	icon.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_toolbar.add_child(icon)
 
