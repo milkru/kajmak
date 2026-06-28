@@ -55,9 +55,12 @@ func build() -> void:
 		var state := BuildState.new()
 		if not prepare_build():
 			return
-		var data := generate_threaded(state)
-		if not data.is_empty():
-			finish_build(data)
+		var ctx := setup_generate(state)   # parse + pre-cull (resources)
+		if ctx.is_empty():
+			return
+		if not run_cull(ctx, state):       # cull (pure math, threadable)
+			return
+		finish_staged(ctx)                 # surfaces + assemble (resources)
 
 ## Main-thread setup: profile banner, clear old children, verify, settings. Returns
 ## false if the build should not proceed.
@@ -77,10 +80,10 @@ func prepare_build() -> bool:
 		load(ProjectSettings.get_setting("func_godot/default_map_settings", "res://addons/func_godot/func_godot_default_map_settings.tres"))
 	return true
 
-## Thread-safe stage: parse the map and generate geometry (no scene-tree access).
-## Returns {entities, groups} on success, or an empty dictionary on failure or
-## cancellation. [param state] carries the cancel flag and current step name.
-func generate_threaded(state: BuildState) -> Dictionary:
+## Stage 1 (MAIN thread): parse the map and run the generator's resource-touching
+## pre-cull phase (materials, vertices, winding). Returns a context dictionary
+## {generator, entities, groups} to carry to the later stages, or {} on failure.
+func setup_generate(state: BuildState) -> Dictionary:
 	var profile: bool = build_flags & BuildFlags.SHOW_PROFILE_INFO
 
 	var parser := FuncGodotParser.new()
@@ -105,20 +108,30 @@ func generate_threaded(state: BuildState) -> Dictionary:
 		print("\nGEOMETRY GENERATOR (KAJMAK)")
 		generator.declare_step.connect(FuncGodotUtil.print_profile_info.bind(generator._SIGNATURE))
 
-	var generate_error := generator.build(build_flags, entities)
-	if generate_error != OK or state.cancelled:
+	if generator.generate_pre_cull(entities) != OK:
 		return {}
+	return {"generator": generator, "entities": entities, "groups": groups}
+
+## Stage 2 (any thread): run the cull. Pure geometry math, no resource or scene
+## access, so the editor runs this on a worker thread. Returns false on cancel.
+func run_cull(ctx: Dictionary, state: BuildState) -> bool:
+	var generator: KajmakGeometryGenerator = ctx["generator"]
+	if generator.cull_step() != OK or state.cancelled:
+		return false
+	return true
+
+## Stage 3 (MAIN thread): generate surfaces (mesh resources) and assemble nodes.
+func finish_staged(ctx: Dictionary) -> void:
+	var generator: KajmakGeometryGenerator = ctx["generator"]
+	if generator.generate_post_cull(build_flags) != OK:
+		return
 	bsp_last = generator.bsp_last
 
-	return {"entities": entities, "groups": groups}
-
-## Main-thread finish: assemble nodes from the generated data and signal done.
-func finish_build(data: Dictionary) -> void:
 	var assembler := FuncGodotEntityAssembler.new(map_settings)
 	if build_flags & BuildFlags.SHOW_PROFILE_INFO:
 		print("\nENTITY ASSEMBLER")
 		assembler.declare_step.connect(FuncGodotUtil.print_profile_info.bind(assembler._SIGNATURE))
-	assembler.build(self, data["entities"], data["groups"])
+	assembler.build(self, ctx["entities"], ctx["groups"])
 
 	if build_flags & BuildFlags.SHOW_PROFILE_INFO:
 		FuncGodotUtil.print_profile_info("Build complete", _KAJMAK_SIGNATURE)

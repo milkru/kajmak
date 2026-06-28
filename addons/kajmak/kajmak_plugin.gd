@@ -25,7 +25,8 @@ var _cancel_button: Button
 var _thread: Thread = null
 var _state: RefCounted = null
 var _map: Node = null
-var _result: Dictionary = {}
+var _ctx: Dictionary = {}
+var _cull_ok: bool = false
 var _start_ms: int = 0
 var _building: bool = false
 
@@ -103,7 +104,8 @@ func _build_toolbar() -> void:
 func _toolbar_icon() -> Texture2D:
 	var theme := EditorInterface.get_editor_theme()
 	if theme:
-		for name in ["MeshInstance3D", "Mesh", "Bake", "Tools"]:
+		# Resource/tool icons are monochrome; node icons (MeshInstance3D) are tinted.
+		for name in ["Mesh", "Bake", "Tools"]:
 			if theme.has_icon(name, "EditorIcons"):
 				return theme.get_icon(name, "EditorIcons")
 	return null
@@ -119,22 +121,30 @@ func request_build(map: Object) -> void:
 
 	_map = map
 	_state = map.make_build_state()
-	_result = {}
 	_start_ms = Time.get_ticks_msec()
-	_building = true
 
+	# Parse + resource-touching pre-cull happen on the main thread (fast).
+	_ctx = map.setup_generate(_state)
+	if _ctx.is_empty():
+		_map = null
+		_state = null
+		return
+
+	_building = true
+	_cull_ok = false
 	_cancel_button.disabled = false
 	_label.text = "Building map  0 s"
 	if _toolbar:
 		_toolbar.visible = true
 
+	# Only the cull (pure math) runs on the worker thread.
 	_thread = Thread.new()
-	_thread.start(_run_generate)
+	_thread.start(_run_cull)
 	set_process(true)
 
-# Worker thread body: no scene-tree access, only parse + geometry generation.
-func _run_generate() -> void:
-	_result = _map.generate_threaded(_state)
+# Worker thread body: cull only (no scene tree, no resources).
+func _run_cull() -> void:
+	_cull_ok = _map.run_cull(_ctx, _state)
 
 func _process(_delta: float) -> void:
 	if not _building:
@@ -149,24 +159,24 @@ func _process(_delta: float) -> void:
 	if _thread != null and not _thread.is_alive():
 		_finish()
 
-# Join the worker and, unless cancelled or failed, assemble on the main thread.
+# Join the worker and, unless cancelled or failed, finish on the main thread.
 func _finish() -> void:
 	_thread.wait_to_finish()
 	_thread = null
 	set_process(false)
 
-	var data := _result
-	var cancelled: bool = _state.cancelled
+	var ok: bool = _cull_ok and not _state.cancelled
+	var ctx := _ctx
+	var map := _map
 	_building = false
 	_state = null
-	_result = {}
+	_ctx = {}
+	_map = null
 	if _toolbar:
 		_toolbar.visible = false
 
-	var map := _map
-	_map = null
-	if map != null and not cancelled and not data.is_empty():
-		map.finish_build(data)
+	if map != null and ok:
+		map.finish_staged(ctx)  # surfaces + assemble on the main thread
 
 func _on_cancel_pressed() -> void:
 	if _state:

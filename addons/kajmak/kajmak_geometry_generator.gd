@@ -58,10 +58,21 @@ const _DEDUP_PRECISION := 1024.0
 # Distance tolerance (Godot units) for point-in-brush-volume tests.
 const _VOLUME_TOLERANCE := 0.001
 
-# Copy of [method FuncGodotGeometryGenerator.build] that inserts the hidden-face
-# culling pre-pass between face winding and surface generation. Kept close to the
-# original so it stays easy to diff against func_godot when upstream changes.
+# Full synchronous build (runtime, headless tools). The editor instead calls the
+# three phases below separately so only the cull (pure CPU math) runs on a worker
+# thread while the resource-touching phases stay on the main thread.
 func build(build_flags: int, entities: Array[_EntityData]) -> Error:
+	var err := generate_pre_cull(entities)
+	if err != OK:
+		return err
+	err = cull_step()
+	if err != OK:
+		return err
+	return generate_post_cull(build_flags)
+
+## Phase 1 (MAIN thread): materials + brush vertices + origins + winding. Touches
+## resources (textures/materials) and so must not run on a worker thread.
+func generate_pre_cull(entities: Array[_EntityData]) -> Error:
 	var entity_count: int = entities.size()
 	declare_step.emit("Preparing %s %s" % [entity_count, "entity" if entity_count == 1 else "entities"])
 	entity_data = entities
@@ -83,16 +94,18 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 	declare_step.emit("Winding faces")
 	task_id = WorkerThreadPool.add_group_task(wind_entity_faces, entity_count, -1, false, "Wind Brush Faces")
 	WorkerThreadPool.wait_for_group_task_completion(task_id)
+	return OK
 
+## Phase 2 (any thread): the hidden-face and exterior culling. Pure geometry math
+## on face data, no resource or scene access, so it is safe to run on a worker
+## thread and is the slow part we want off the main thread.
+func cull_step() -> Error:
 	if _cancelled():
 		return FAILED
 
-	# KAJMAK: global hidden-face culling pre-pass (runs single-threaded here, after
-	# all faces are wound and before parallel surface generation reads them).
-	# Snapshot each brush's original bounds + interior point now, while every face
-	# is still present. Both cull passes need a stable interior point to orient
-	# their inside/outside tests; recomputing it after one pass has erased faces
-	# would shift it outside the brush and corrupt the other pass.
+	# Snapshot each brush's original bounds + interior point before any face is
+	# culled. Both passes need a stable interior point to orient their inside/outside
+	# tests; recomputing it after one pass erased faces would corrupt the other.
 	if bsp_debug or cull_exterior or enable_cull:
 		_snapshot_brushes()
 
@@ -101,8 +114,7 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 		_bsp_debug_stats()
 	else:
 		# Hidden-face culling runs first, then exterior culling trims whatever
-		# remains down to its visible (non-void-facing) parts. Both read brush
-		# interiors from the snapshot, so the order does not corrupt either one.
+		# remains down to its visible (non-void-facing) parts.
 		if enable_cull:
 			declare_step.emit("Culling hidden faces")
 			cull_hidden_faces()
@@ -112,9 +124,14 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 
 	if _cancelled():
 		return FAILED
+	return OK
 
+## Phase 3 (MAIN thread): surface generation + UV2 unwrap. Creates mesh resources,
+## so it must run on the main thread.
+func generate_post_cull(build_flags: int) -> Error:
+	var entity_count: int = entity_data.size()
 	declare_step.emit("Generating surfaces")
-	task_id = WorkerThreadPool.add_group_task(generate_entity_surfaces, entity_count, -1, false, "Generate Surfaces")
+	var task_id := WorkerThreadPool.add_group_task(generate_entity_surfaces, entity_count, -1, false, "Generate Surfaces")
 	WorkerThreadPool.wait_for_group_task_completion(task_id)
 
 	if build_flags & FuncGodotMap.BuildFlags.UNWRAP_UV2:
