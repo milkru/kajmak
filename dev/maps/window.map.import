@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://cavny5ck1f2pp"
+path="res://.godot/imported/window.map-084f22cd30a2c34c8cebce3b6ca2e01e.tres"
+
+[deps]
+
+source_file="res://dev/maps/window.map"
+dest_files=["res://.godot/imported/window.map-084f22cd30a2c34c8cebce3b6ca2e01e.tres"]
+
+[params]
+
