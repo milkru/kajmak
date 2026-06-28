@@ -1,10 +1,12 @@
-# Kajmak
+# kajmak
 
 Kajmak strips out the faces you never see from your func_godot maps.
 
 When you build a Quake style map with func_godot, every brush is a full solid box. Stack two boxes, push a pillar into a wall, glue a slab onto the floor, and the faces that end up buried inside other geometry still get built and drawn. You cannot see them but the GPU still pays for them. Kajmak finds those hidden faces while the map is building and removes them. When a face is only partly hidden it cuts out the covered part and keeps the rest, so a wall behind a small crate ends up with a neat hole exactly where the crate touches it.
 
 This is the same idea the old Quake and Half Life compilers used when they carved brushes so nothing overlaps. func_godot does not do it, so Kajmak bolts it on as a small separate plugin. It never touches func_godot itself, so you can update func_godot whenever you want.
+
+![Example](https://github.com/milkru/data_resources/blob/main/kajmak.png "Example")
 
 ## What it handles
 
