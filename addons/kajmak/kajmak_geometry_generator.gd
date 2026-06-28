@@ -404,8 +404,9 @@ func _intersection_area_2d(a: PackedVector2Array, b: PackedVector2Array) -> floa
 		area += absf(_signed_area_2d(poly))
 	return area
 
-# Union together any cover polygons that overlap each other, so the later
-# subtraction sees (effectively) disjoint covers.
+# Union together any cover polygons that are connected (overlapping OR merely
+# touching), so the later subtraction produces clean, non-overlapping holes. Two
+# covers are merged when their union is a single ring; disjoint covers are kept.
 func _merge_overlapping(covers: Array) -> Array:
 	var result: Array = covers.duplicate()
 	var merged_any := true
@@ -415,16 +416,13 @@ func _merge_overlapping(covers: Array) -> Array:
 		while i < result.size():
 			var j := i + 1
 			while j < result.size():
-				if _intersection_area_2d(result[i], result[j]) > _OVERLAP_EPSILON:
-					var merged: Array = []
-					for poly in Geometry2D.merge_polygons(result[i], result[j]):
-						if not Geometry2D.is_polygon_clockwise(poly):
-							merged.append(poly)
+				var outers: Array = []
+				for poly in Geometry2D.merge_polygons(result[i], result[j]):
+					if not Geometry2D.is_polygon_clockwise(poly):
+						outers.append(poly)
+				if outers.size() == 1:
+					result[i] = outers[0]
 					result.remove_at(j)
-					if merged.size() > 0:
-						result[i] = merged[0]
-						for k in range(1, merged.size()):
-							result.append(merged[k])
 					merged_any = true
 				else:
 					j += 1
