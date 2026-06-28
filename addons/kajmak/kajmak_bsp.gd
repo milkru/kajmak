@@ -359,19 +359,25 @@ func _polys_overlap(a: PackedVector3Array, b: PackedVector3Array, plane: Plane) 
 #endregion
 
 
-# A face is culled only when at least this fraction of its area faces the void.
-# A big interior face that only grazes an opening at one corner is well under this
-# and is kept; a face that is mostly exposed is culled.
-const _EXTERIOR_FRACTION := 0.5
+# Pure floating-point-noise tolerance (fraction of face area). Polygon clipping
+# can leave sub-pixel slivers; anything above this is treated as real area. This
+# is NOT a "how much is outside" gate.
+const _AREA_EPS := 1.0e-4
 
-## True when most of the face fronts exterior void. The face polygon is pushed
-## down the tree (at its own boundary plane it follows [param normal] to the
-## outward side, transverse planes split it) and the area of the pieces that land
-## in exterior empty leaves is summed. We cull when that area is at least
-## [constant _EXTERIOR_FRACTION] of the whole face, so a mostly-interior face that
-## only touches an opening with a sliver is kept.
+## A face is culled by the exterior pass only when it fronts the void somewhere and
+## fronts NO interior (player-reachable) space at all. If even a sliver of the face
+## faces a room the player can be in, the whole face is kept (never half-culled).
+## The face polygon is pushed down the tree (at its own boundary plane it follows
+## [param normal] to the outward side, transverse planes split it) and the area
+## landing in exterior vs interior empty leaves is summed exactly.
 func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
-	return exterior_fraction(face_verts, normal) >= _EXTERIOR_FRACTION
+	if face_verts.size() < 3:
+		return false
+	var total := _poly_area(face_verts)
+	if total <= 0.0:
+		return false
+	var areas := _front_areas(root, face_verts, normal)  # x = exterior, y = interior
+	return areas.x > total * _AREA_EPS and areas.y <= total * _AREA_EPS
 
 
 ## Fraction (0..1) of a face's area whose front lands in exterior empty leaves.
@@ -381,15 +387,18 @@ func exterior_fraction(face_verts: PackedVector3Array, normal: Vector3) -> float
 	var total := _poly_area(face_verts)
 	if total <= 0.0:
 		return 0.0
-	return _exterior_area(root, face_verts, normal) / total
+	return _front_areas(root, face_verts, normal).x / total
 
 
-# Sum the area of the face polygon pieces that front an exterior empty leaf.
-func _exterior_area(node: BSPNode, poly: PackedVector3Array, normal: Vector3) -> float:
+# Area of the face polygon pieces that front exterior void (x) vs interior empty
+# space (y). Solid-fronted pieces contribute to neither.
+func _front_areas(node: BSPNode, poly: PackedVector3Array, normal: Vector3) -> Vector2:
 	if node == null or poly.size() < 3:
-		return 0.0
+		return Vector2.ZERO
 	if node.is_leaf:
-		return _poly_area(poly) if (not node.solid and node.exterior) else 0.0
+		if node.solid:
+			return Vector2.ZERO
+		return Vector2(_poly_area(poly), 0.0) if node.exterior else Vector2(0.0, _poly_area(poly))
 
 	var nf := 0
 	var nb := 0
@@ -403,15 +412,15 @@ func _exterior_area(node: BSPNode, poly: PackedVector3Array, normal: Vector3) ->
 	if nf == 0 and nb == 0:
 		# Coplanar with this split: the face lies on it, so follow the outward side.
 		if normal.dot(node.plane.normal) >= 0.0:
-			return _exterior_area(node.front, poly, normal)
-		return _exterior_area(node.back, poly, normal)
+			return _front_areas(node.front, poly, normal)
+		return _front_areas(node.back, poly, normal)
 	if nb == 0:
-		return _exterior_area(node.front, poly, normal)
+		return _front_areas(node.front, poly, normal)
 	if nf == 0:
-		return _exterior_area(node.back, poly, normal)
+		return _front_areas(node.back, poly, normal)
 
-	return (_exterior_area(node.front, _clip_front(poly, node.plane), normal)
-			+ _exterior_area(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal))
+	return (_front_areas(node.front, _clip_front(poly, node.plane), normal)
+			+ _front_areas(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal))
 
 
 # Area of a planar 3D polygon (Newell's method).
