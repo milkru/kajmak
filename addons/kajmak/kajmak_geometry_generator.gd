@@ -168,27 +168,32 @@ func cull_hidden_faces() -> void:
 		if covers.is_empty():
 			continue
 
-		# Clip each cover to the face so we work only with the covered sub-regions.
-		var covered: Array = []  # Array[PackedVector2Array]
-		for cover in covers:
-			for piece in Geometry2D.intersect_polygons(face_2d, cover):
-				if absf(_signed_area_2d(piece)) > face_area * _OVERLAP_EPSILON:
-					covered.append(piece)
-		if covered.is_empty():
+		# Independent ground truth for the visible area: boolean-subtract the covers.
+		covers = _merge_overlapping(covers)
+		var remaining_area := _region_area(_subtract(face_2d, covers))
+
+		if remaining_area <= face_area * _FULL_COVERAGE_EPSILON:
+			to_remove.append([record["brush"], face])
+			removed[face] = true
 			continue
 
-		# Re-triangulate the visible remainder. We Delaunay-triangulate the face's
-		# corners plus all cover corners (Steiner points), then keep only triangles
-		# whose centroid lies inside the face and outside every covered region. This
-		# is robust for big faces with small holes (where bridge-based triangulation
-		# of a holed polygon breaks down).
+		if remaining_area >= face_area * (1.0 - _FULL_COVERAGE_EPSILON):
+			continue  # negligible coverage; leave the face untouched
+
+		# Triangulate the remainder: Delaunay over the face corners + cover corners
+		# (Steiner points), keeping triangles whose centroid is inside the face and
+		# outside every cover.
+		var covered: Array = []  # cover pieces clipped to the face
+		for cover in covers:
+			for piece in Geometry2D.intersect_polygons(face_2d, cover):
+				covered.append(piece)
 		var points := PackedVector2Array(face_2d)
 		for piece in covered:
 			points.append_array(piece)
 		var tri_indices := Geometry2D.triangulate_delaunay(points)
 
 		var triangles := PackedVector2Array()
-		var remaining_area := 0.0
+		var tri_area := 0.0
 		for t in range(0, tri_indices.size(), 3):
 			var a := points[tri_indices[t]]
 			var b := points[tri_indices[t + 1]]
@@ -210,18 +215,15 @@ func cull_hidden_faces() -> void:
 			triangles.append(a)
 			triangles.append(b)
 			triangles.append(c)
-			remaining_area += absf(_triangle_signed_area(a, b, c))
+			tri_area += absf(_triangle_signed_area(a, b, c))
 
-		if remaining_area <= face_area * _FULL_COVERAGE_EPSILON:
-			to_remove.append([record["brush"], face])
-			removed[face] = true
+		# Safety net: accept the split only if the triangles faithfully reproduce the
+		# remaining area (catches Delaunay triangles that cross cover/face edges on
+		# complex faces). Otherwise keep the whole face — a missed cull is fine, a
+		# corrupted face is not.
+		if triangles.is_empty() or absf(tri_area - remaining_area) > face_area * 0.01 + 1.0e-5:
 			continue
 
-		if remaining_area >= face_area * (1.0 - _FULL_COVERAGE_EPSILON):
-			continue  # negligible coverage; leave the face untouched
-
-		if triangles.is_empty():
-			continue  # could not triangulate; keep the whole face rather than corrupt it
 		_rebuild_face(face, triangles, origin, u, v)
 		split_count += 1
 		if debug_log_pairs:
@@ -415,5 +417,58 @@ func _intersection_area_2d(a: PackedVector2Array, b: PackedVector2Array) -> floa
 # Signed area of a 2D triangle (positive = counter-clockwise in the u,v frame).
 func _triangle_signed_area(a: Vector2, b: Vector2, c: Vector2) -> float:
 	return ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5
+
+# Union together cover polygons that overlap each other so subtraction stays clean.
+func _merge_overlapping(covers: Array) -> Array:
+	var result: Array = covers.duplicate()
+	var merged_any := true
+	while merged_any:
+		merged_any = false
+		var i := 0
+		while i < result.size():
+			var j := i + 1
+			while j < result.size():
+				if _intersection_area_2d(result[i], result[j]) > _OVERLAP_EPSILON:
+					var merged: Array = []
+					for poly in Geometry2D.merge_polygons(result[i], result[j]):
+						if not Geometry2D.is_polygon_clockwise(poly):
+							merged.append(poly)
+					result.remove_at(j)
+					if merged.size() > 0:
+						result[i] = merged[0]
+						for k in range(1, merged.size()):
+							result.append(merged[k])
+					merged_any = true
+				else:
+					j += 1
+			i += 1
+	return result
+
+# Subtract clip polygons from a subject polygon. Returns
+# {outers: Array[PackedVector2Array], holes: Array[PackedVector2Array]}.
+func _subtract(subject: PackedVector2Array, clips: Array) -> Dictionary:
+	var outers: Array = [subject]
+	var holes: Array = []
+	for clip in clips:
+		var next_outers: Array = []
+		for outer in outers:
+			for poly in Geometry2D.clip_polygons(outer, clip):
+				if Geometry2D.is_polygon_clockwise(poly):
+					holes.append(poly)
+				else:
+					next_outers.append(poly)
+		outers = next_outers
+		if outers.is_empty():
+			break
+	return {"outers": outers, "holes": holes}
+
+# Net area of a {outers, holes} region.
+func _region_area(region: Dictionary) -> float:
+	var area := 0.0
+	for outer in region["outers"]:
+		area += absf(_signed_area_2d(outer))
+	for hole in region["holes"]:
+		area -= absf(_signed_area_2d(hole))
+	return maxf(area, 0.0)
 
 #endregion
