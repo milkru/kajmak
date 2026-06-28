@@ -427,12 +427,16 @@ func _merge_overlapping(covers: Array) -> Array:
 		while i < result.size():
 			var j := i + 1
 			while j < result.size():
-				var outers: Array = []
-				for poly in Geometry2D.merge_polygons(result[i], result[j]):
-					if not Geometry2D.is_polygon_clockwise(poly):
-						outers.append(poly)
-				if outers.size() == 1:
-					result[i] = outers[0]
+				var merged := Geometry2D.merge_polygons(result[i], result[j])
+				var hole_count := 0
+				for poly in merged:
+					if Geometry2D.is_polygon_clockwise(poly):
+						hole_count += 1
+				# Only merge when the union is a single hole-free polygon. If merging
+				# would create a hole (e.g. four window-frame bars forming a ring), keep
+				# the covers separate so the enclosed island of the face survives.
+				if merged.size() == 1 and hole_count == 0:
+					result[i] = merged[0]
 					result.remove_at(j)
 					merged_any = true
 				else:
