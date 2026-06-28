@@ -90,15 +90,15 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 		declare_step.emit("BSP debug stats")
 		_bsp_debug_stats()
 	else:
-		# Exterior void culling runs first on pristine faces, then hidden-face
-		# culling splits whatever remains. Both read brush interiors from the
-		# snapshot, so the order does not corrupt either one.
-		if cull_exterior:
-			declare_step.emit("Culling exterior faces")
-			cull_exterior_faces()
+		# Hidden-face culling runs first, then exterior culling trims whatever
+		# remains down to its visible (non-void-facing) parts. Both read brush
+		# interiors from the snapshot, so the order does not corrupt either one.
 		if enable_cull:
 			declare_step.emit("Culling hidden faces")
 			cull_hidden_faces()
+		if cull_exterior:
+			declare_step.emit("Culling exterior faces")
+			cull_exterior_faces()
 
 	declare_step.emit("Generating surfaces")
 	task_id = WorkerThreadPool.add_group_task(generate_entity_surfaces, entity_count, -1, false, "Generate Surfaces")
@@ -286,38 +286,38 @@ func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Arra
 		return false
 	return true
 
-# Gather solid occluder brushes (same gate as the culler) and build a BSP from
-# their planes. Each brush is passed with an interior point so the BSP can orient
-# its planes consistently. Returns the built KajmakBSP.
+# Build a BSP from the original solid occluder brushes (from the snapshot, so a
+# prior cull pass erasing faces cannot unseal the world). Each brush is passed
+# with its interior point so the BSP can orient its planes consistently.
 func _build_occluder_bsp():
 	var brushes: Array = []
-	var all_points := PackedVector3Array()
-	for entity_index in entity_data.size():
-		var entity: _EntityData = entity_data[entity_index]
-		if not _entity_renders(entity):
-			continue
-		for brush in entity.brushes:
-			if not _brush_has_solid_face(brush):
-				continue
-			var bounds := _brush_origin_bounds(brush)
-			brushes.append({"planes": brush.planes, "inside": bounds[1]})
-			for face in brush.faces:
-				for vertex in face.vertices:
-					all_points.append(vertex)
+	var world := AABB()
+	var first := true
+	for brush in _brush_orig:
+		var bounds: Array = _brush_orig[brush]
+		brushes.append({"planes": brush.planes, "inside": bounds[1]})
+		if first:
+			world = bounds[0]
+			first = false
+		else:
+			world = world.merge(bounds[0])
 
 	var bsp := _KajmakBSPScript.new()
-	bsp.build(brushes, _aabb_of(all_points))
+	bsp.build(brushes, world)
 	return bsp
 
-# Remove faces that open onto the exterior void of a sealed map. Builds the BSP,
-# floods the empty space connected to the outside, and drops any visible face
-# whose front side lies entirely in that exterior space. A face that is partly
-# interior or buried is kept whole (the hidden-face pass handles burial).
+# Trim faces down to the parts the player can actually see. Builds the BSP, floods
+# the empty space connected to the outside, then for each face keeps only the
+# fragments whose front faces interior space or solid, dropping the parts that
+# front the exterior void. A face fully facing the void is removed; one partly
+# outside is split and rebuilt to just its visible region.
 func cull_exterior_faces() -> void:
 	var bsp: Variant = _build_occluder_bsp()
 	bsp.mark_exterior()
 
 	var to_remove: Array = []
+	var rebuilds: Array = []   # [face, triangles_2d, origin, u, v]
+	var trimmed := 0
 	for entity_index in entity_data.size():
 		var entity: _EntityData = entity_data[entity_index]
 		if not _entity_renders(entity):
@@ -332,18 +332,72 @@ func cull_exterior_faces() -> void:
 				var outward := face.plane.normal
 				if (face.get_centroid() - brush_centroid).dot(outward) < 0.0:
 					outward = -outward
-				if bsp.face_front_is_exterior(face.vertices, outward):
+
+				# In-plane basis matching the winding frame so rebuilt triangles stay
+				# front-facing (same convention as the hidden-face split).
+				var u := _plane_tangent(face.plane.normal)
+				var v := u.cross(face.plane.normal).normalized()
+				var origin := face.plane.get_center()
+
+				var total_area := 0.0
+				var keep := PackedVector2Array()
+				var keep_area := 0.0
+				for tri: PackedVector3Array in _face_triangles_3d(face):
+					var t2d := _project_2d(tri, origin, u, v)
+					total_area += absf(_triangle_signed_area(t2d[0], t2d[1], t2d[2]))
+					for frag: PackedVector3Array in bsp.face_visible_fragments(tri, outward):
+						var f2d := _project_2d(frag, origin, u, v)
+						for i in range(1, f2d.size() - 1):
+							var area := _triangle_signed_area(f2d[0], f2d[i], f2d[i + 1])
+							if absf(area) <= 1.0e-9:
+								continue
+							var a := f2d[0]
+							var b := f2d[i]
+							var c := f2d[i + 1]
+							if area < 0.0:
+								var s := b
+								b = c
+								c = s
+							keep.append(a)
+							keep.append(b)
+							keep.append(c)
+							keep_area += absf(area)
+
+				if total_area <= 0.0:
+					continue
+				if keep_area <= total_area * 1.0e-4:
 					to_remove.append([brush, face])
 					if debug_log_pairs:
 						print("[KAJMAK] e%d '%s' faces void -> removed" % [entity_index, face.texture])
+				elif keep_area < total_area * (1.0 - 1.0e-4):
+					rebuilds.append([face, keep, origin, u, v])
+					trimmed += 1
 
+	for r in rebuilds:
+		_rebuild_face(r[0], r[1], r[2], r[3], r[4])
 	for pair in to_remove:
 		var brush: _BrushData = pair[0]
 		brush.faces.erase(pair[1])
 
 	if debug_log_pairs:
-		print("[KAJMAK] exterior pass: %d leaves outside, removed %d face(s)" % [
-			bsp.exterior_leaf_count, to_remove.size()])
+		print("[KAJMAK] exterior pass: %d leaves outside, removed %d, trimmed %d face(s)" % [
+			bsp.exterior_leaf_count, to_remove.size(), trimmed])
+
+# Triangles of a face as 3D vertex triples, from its index buffer if present,
+# otherwise a fan over its wound vertices.
+func _face_triangles_3d(face: _FaceData) -> Array:
+	var out: Array = []
+	var verts := face.vertices
+	if verts.size() < 3:
+		return out
+	if face.indices.size() >= 3:
+		var idx := face.indices
+		for i in range(0, idx.size(), 3):
+			out.append(PackedVector3Array([verts[idx[i]], verts[idx[i + 1]], verts[idx[i + 2]]]))
+	else:
+		for i in range(1, verts.size() - 1):
+			out.append(PackedVector3Array([verts[0], verts[i], verts[i + 1]]))
+	return out
 
 # Dev only: build the occluder BSP and leave it in [member bsp_last] for a harness
 # to inspect. Does not touch any face, so the build output is unchanged.

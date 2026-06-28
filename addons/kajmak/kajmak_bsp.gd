@@ -380,6 +380,48 @@ func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> 
 	return areas.x > total * _AREA_EPS and areas.y <= total * _AREA_EPS
 
 
+## Convex fragments of a face polygon whose front does NOT open onto exterior void
+## (it faces interior space or solid). These are the parts to keep; everything else
+## of the face is void-facing and can be culled. Lets a partly-outside face be
+## trimmed to just its visible part instead of kept or dropped whole.
+func face_visible_fragments(face_verts: PackedVector3Array, normal: Vector3) -> Array:
+	var out: Array = []
+	if face_verts.size() >= 3:
+		_collect_visible(root, face_verts, normal, out)
+	return out
+
+
+func _collect_visible(node: BSPNode, poly: PackedVector3Array, normal: Vector3, out: Array) -> void:
+	if node == null or poly.size() < 3:
+		return
+	if node.is_leaf:
+		if node.solid or not node.exterior:
+			out.append(poly)
+		return
+
+	var nf := 0
+	var nb := 0
+	for p in poly:
+		var d := node.plane.distance_to(p)
+		if d > EPS:
+			nf += 1
+		elif d < -EPS:
+			nb += 1
+
+	if nf == 0 and nb == 0:
+		if normal.dot(node.plane.normal) >= 0.0:
+			_collect_visible(node.front, poly, normal, out)
+		else:
+			_collect_visible(node.back, poly, normal, out)
+	elif nb == 0:
+		_collect_visible(node.front, poly, normal, out)
+	elif nf == 0:
+		_collect_visible(node.back, poly, normal, out)
+	else:
+		_collect_visible(node.front, _clip_front(poly, node.plane), normal, out)
+		_collect_visible(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), normal, out)
+
+
 ## Fraction (0..1) of a face's area whose front lands in exterior empty leaves.
 func exterior_fraction(face_verts: PackedVector3Array, normal: Vector3) -> float:
 	if face_verts.size() < 3:
