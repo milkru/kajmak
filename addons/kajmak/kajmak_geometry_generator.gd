@@ -295,10 +295,16 @@ func cull_exterior_faces() -> void:
 		if not _entity_renders(entity):
 			continue
 		for brush in entity.brushes:
+			# Brush centroid is the reference for "outward" so we never trust a face
+			# plane that happens to point the wrong way.
+			var brush_centroid: Vector3 = _brush_bounds(brush)[1]
 			for face in brush.faces:
 				if not _is_visual_face(face):
 					continue
-				if bsp.face_front_is_exterior(face.vertices, face.plane.normal):
+				var outward := face.plane.normal
+				if (face.get_centroid() - brush_centroid).dot(outward) < 0.0:
+					outward = -outward
+				if bsp.face_front_is_exterior(face.vertices, outward):
 					to_remove.append([brush, face])
 					if debug_log_pairs:
 						print("[KAJMAK] e%d '%s' faces void -> removed" % [entity_index, face.texture])

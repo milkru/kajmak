@@ -36,6 +36,7 @@ class BSPNode extends RefCounted:
 	var solid: bool = false   # leaf only
 	var exterior: bool = false # leaf only: empty and reachable from the outside void
 	var cell: Array = []      # leaf only: inward-normal half-spaces of the cell
+	var neighbors: Array = [] # leaf only: leaves sharing a portal (built on demand)
 	var depth: int = 0
 
 ## One convex brush: outward-oriented half-space planes plus a known interior point.
@@ -48,6 +49,8 @@ var bounds: AABB             # the world AABB passed to build()
 var leaves: Array[BSPNode] = []
 var exterior_leaf_count: int = 0
 var _brushes: Array[Brush] = []
+var _root_cell: Array = []   # the grown root cell, kept for portalization
+var _grown: AABB             # the grown world bounds (root cell extent)
 
 # Stats, filled by build().
 var node_count: int = 0
@@ -69,7 +72,9 @@ func build(brushes: Array, world_aabb: AABB) -> void:
 	_ingest_brushes(brushes)
 
 	var grown := world_aabb.grow(maxf(1.0, world_aabb.size.length() * 0.01))
+	_grown = grown
 	var cell := _aabb_cell(grown)
+	_root_cell = cell
 	var indices := PackedInt32Array()
 	for i in _brushes.size():
 		indices.append(i)
@@ -190,89 +195,178 @@ func is_solid(point: Vector3) -> bool:
 
 #region EXTERIOR VOID FLOOD
 
-# How far to step across a cell facet when finding the neighbour leaf, and how
-# far in front of a face to sample. Both are small multiples of EPS so we land
-# just across the boundary, inside the adjacent cell.
-const _STEP := EPS * 8.0
+# How far in front of a face to sample when testing it, and how far to pull a
+# sample toward the face centroid so it never sits exactly on an edge.
 const _FRONT_STEP := EPS * 16.0
-# Pull facet/face sample points this fraction toward their centroid so we never
-# sample exactly on an edge, where the containing leaf is ambiguous.
 const _INSET := 0.02
 
-## Flood fill the empty leaves that connect to the outside void, starting from a
-## point well outside the map. After this, [member BSPNode.exterior] is true on
-## every empty leaf reachable from outside without passing through solid.
+## Flood fill the empty leaves that connect to the outside void. Builds exact leaf
+## adjacency (BSP portals) once, seeds every empty leaf touching the outer bounds,
+## then floods through empty neighbours. After this [member BSPNode.exterior] is
+## true on every empty leaf reachable from outside without passing through solid.
 func mark_exterior() -> void:
+	_build_portals()
 	for leaf in leaves:
 		leaf.exterior = false
 	exterior_leaf_count = 0
 
-	var margin := bounds.size.length() * 0.1 + 1.0
-	var seed := locate_leaf(bounds.position - Vector3.ONE * margin)
-	if seed == null or seed.solid:
-		return  # could not find an outside empty seed; mark nothing (safe)
+	var queue: Array[BSPNode] = []
+	var mn := _grown.position
+	var mx := _grown.position + _grown.size
+	for leaf in leaves:
+		if leaf.solid or leaf.exterior:
+			continue
+		if _touches_outer(leaf, mn, mx):
+			leaf.exterior = true
+			exterior_leaf_count += 1
+			queue.append(leaf)
 
-	var queue: Array[BSPNode] = [seed]
-	seed.exterior = true
-	exterior_leaf_count = 1
 	while not queue.is_empty():
 		var leaf: BSPNode = queue.pop_back()
-		for nb in _empty_neighbors(leaf):
-			if not nb.exterior:
+		for nb in leaf.neighbors:
+			if not nb.solid and not nb.exterior:
 				nb.exterior = true
 				exterior_leaf_count += 1
 				queue.append(nb)
 
 
-# Find the empty leaves sharing a facet with this leaf. For each facet we step a
-# hair across it at several points and locate the leaf there, accepting it only
-# when it really borders the same plane (guards against overshooting thin solids).
-func _empty_neighbors(leaf: BSPNode) -> Array[BSPNode]:
-	var result: Array[BSPNode] = []
-	var verts := _cell_vertices(leaf.cell)
-	for plane: Plane in leaf.cell:
-		var facet := PackedVector3Array()
-		for v in verts:
-			if absf(plane.distance_to(v)) <= EPS * 4.0:
-				facet.append(v)
-		if facet.size() < 3:
-			continue  # not a real 2D face of the cell
-		for sample: Vector3 in _facet_samples(facet):
-			var probe := sample - plane.normal * _STEP
-			var nb := locate_leaf(probe)
-			if nb != null and nb != leaf and not nb.solid and not result.has(nb):
-				if _shares_plane(nb, plane):
-					result.append(nb)
-	return result
-
-
-# Sample points across a convex facet: its centroid plus each vertex pulled in
-# toward the centroid, so subdivided neighbours on the far side are all reached.
-func _facet_samples(facet: PackedVector3Array) -> PackedVector3Array:
-	var centroid := Vector3.ZERO
-	for v in facet:
-		centroid += v
-	centroid /= float(facet.size())
-	var out := PackedVector3Array()
-	out.append(centroid)
-	for v in facet:
-		out.append(v.lerp(centroid, _INSET))
-	return out
-
-
-# True when leaf has the opposite of plane among its cell boundaries, i.e. the
-# two cells genuinely meet on this plane.
-func _shares_plane(leaf: BSPNode, plane: Plane) -> bool:
-	for q in leaf.cell:
-		if q.normal.dot(plane.normal) < -0.999 and absf(q.d + plane.d) <= EPS * 4.0:
+# A leaf touches the outer void when one of its cell vertices lies on the grown
+# root box. The outer void always reaches that box, so these are the flood seeds.
+func _touches_outer(leaf: BSPNode, mn: Vector3, mx: Vector3) -> bool:
+	for p in _cell_vertices(leaf.cell):
+		if (absf(p.x - mn.x) <= EPS or absf(p.x - mx.x) <= EPS
+				or absf(p.y - mn.y) <= EPS or absf(p.y - mx.y) <= EPS
+				or absf(p.z - mn.z) <= EPS or absf(p.z - mx.z) <= EPS):
 			return true
 	return false
 
 
-## True when the space directly in front of a face is entirely exterior void.
-## Samples just off the face along [param normal] at its centroid and inset
-## corners; returns true only if every sample lands in an exterior empty leaf, so
-## a face that is partly interior or partly buried is conservatively kept.
+#region PORTALS (exact leaf adjacency)
+
+# Build adjacency between leaves that share a 2D face. For each internal node we
+# take its split plane clipped to the node's cell (the portal), push it down both
+# subtrees to the leaves it touches on each side, and link any front/back leaf
+# pair whose pieces overlap. This is exact, unlike point sampling.
+func _build_portals() -> void:
+	for leaf in leaves:
+		leaf.neighbors = []
+	_portalize(root, _root_cell)
+
+
+func _portalize(node: BSPNode, cell: Array) -> void:
+	if node == null or node.is_leaf:
+		return
+	var portal := _plane_polygon(node.plane, cell)
+	if portal.size() >= 3:
+		var fronts: Array = []
+		var backs: Array = []
+		_gather_pieces(node.front, portal, fronts)
+		_gather_pieces(node.back, portal, backs)
+		for f in fronts:
+			for b in backs:
+				if _polys_overlap(f[1], b[1], node.plane):
+					_link(f[0], b[0])
+	var fc := cell.duplicate()
+	fc.append(node.plane)
+	var bc := cell.duplicate()
+	bc.append(Plane(-node.plane.normal, -node.plane.d))
+	_portalize(node.front, fc)
+	_portalize(node.back, bc)
+
+
+# Clip a coplanar polygon down a subtree, collecting [leaf, piece] for every leaf
+# the polygon reaches.
+func _gather_pieces(node: BSPNode, poly: PackedVector3Array, out: Array) -> void:
+	if poly.size() < 3:
+		return
+	if node.is_leaf:
+		out.append([node, poly])
+		return
+	_gather_pieces(node.front, _clip_front(poly, node.plane), out)
+	_gather_pieces(node.back, _clip_front(poly, Plane(-node.plane.normal, -node.plane.d)), out)
+
+
+func _link(a: BSPNode, b: BSPNode) -> void:
+	if not a.neighbors.has(b):
+		a.neighbors.append(b)
+	if not b.neighbors.has(a):
+		b.neighbors.append(a)
+
+
+# The cross-section polygon of a plane through a convex cell: a big quad on the
+# plane clipped by every (inward) cell plane.
+func _plane_polygon(plane: Plane, cell: Array) -> PackedVector3Array:
+	var n := plane.normal
+	var ref := Vector3.UP if absf(n.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
+	var u := n.cross(ref).normalized()
+	var v := n.cross(u).normalized()
+	var c := plane.get_center()
+	var r := _grown.size.length() * 2.0 + 10.0
+	var poly := PackedVector3Array([
+		c - u * r - v * r,
+		c + u * r - v * r,
+		c + u * r + v * r,
+		c - u * r + v * r,
+	])
+	for cp: Plane in cell:
+		poly = _clip_front(poly, cp)
+		if poly.size() < 3:
+			break
+	return poly
+
+
+# Keep the part of a convex polygon on the front (>= 0) side of a plane.
+func _clip_front(poly: PackedVector3Array, plane: Plane) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	var n := poly.size()
+	if n == 0:
+		return out
+	for i in n:
+		var a := poly[i]
+		var b := poly[(i + 1) % n]
+		var da := plane.distance_to(a)
+		var db := plane.distance_to(b)
+		if da >= -EPS:
+			out.append(a)
+		if (da > EPS and db < -EPS) or (da < -EPS and db > EPS):
+			var t := da / (da - db)
+			out.append(a.lerp(b, t))
+	return out
+
+
+# Do two coplanar polygons overlap with positive area, measured in the plane.
+func _polys_overlap(a: PackedVector3Array, b: PackedVector3Array, plane: Plane) -> bool:
+	if a.size() < 3 or b.size() < 3:
+		return false
+	var n := plane.normal
+	var ref := Vector3.UP if absf(n.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
+	var u := n.cross(ref).normalized()
+	var v := n.cross(u).normalized()
+	var c := plane.get_center()
+	var a2 := PackedVector2Array()
+	for p in a:
+		a2.append(Vector2((p - c).dot(u), (p - c).dot(v)))
+	var b2 := PackedVector2Array()
+	for p in b:
+		b2.append(Vector2((p - c).dot(u), (p - c).dot(v)))
+	for poly in Geometry2D.intersect_polygons(a2, b2):
+		var area := 0.0
+		var m := poly.size()
+		for i in m:
+			var p0 := poly[i]
+			var p1 := poly[(i + 1) % m]
+			area += p0.x * p1.y - p1.x * p0.y
+		if absf(area) * 0.5 > EPS:
+			return true
+	return false
+
+#endregion
+
+
+## True when the space directly in front of a face is exterior void. Samples just
+## off the face along [param normal] at its centroid and inset corners; returns
+## true only if every sample lands in an exterior empty leaf, so a face that is
+## partly facing an interior space is kept whole.
 func face_front_is_exterior(face_verts: PackedVector3Array, normal: Vector3) -> bool:
 	if face_verts.size() < 3:
 		return false
