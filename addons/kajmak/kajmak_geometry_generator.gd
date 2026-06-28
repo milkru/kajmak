@@ -183,8 +183,15 @@ func cull_hidden_faces() -> void:
 			continue  # negligible overlap; leave the face untouched
 
 		var triangles := _triangulate_region(remainder)
-		if triangles.is_empty():
-			continue  # triangulation failed; keep the whole face rather than corrupt it
+
+		# Safety net: accept the split only if the triangles faithfully reproduce the
+		# remaining area (catches any triangulation error). Otherwise keep the whole
+		# face — a missed cull is fine, corrupted geometry is not.
+		var tri_area := 0.0
+		for t in range(0, triangles.size(), 3):
+			tri_area += absf(_triangle_signed_area(triangles[t], triangles[t + 1], triangles[t + 2]))
+		if triangles.is_empty() or absf(tri_area - remaining_area) > face_area * 0.01 + 1.0e-5:
+			continue
 		_rebuild_face(face, triangles, origin, u, v)
 		split_count += 1
 		if debug_log_pairs:
@@ -433,89 +440,285 @@ func _region_area(region: Dictionary) -> float:
 
 # Triangulate a {outers, holes} region into a flat list of 2D triangle triples,
 # each enforced counter-clockwise so lifted triangles stay front-facing.
+func _triangle_signed_area(a: Vector2, b: Vector2, c: Vector2) -> float:
+	return ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5
+
+func _poly_centroid(poly: PackedVector2Array) -> Vector2:
+	var sum := Vector2.ZERO
+	for p in poly:
+		sum += p
+	return sum / float(poly.size())
+
+# Triangulate a {outers, holes} region into a flat list of 2D triangle triples
+# (counter-clockwise in the u,v frame) using ear clipping with hole elimination.
 func _triangulate_region(region: Dictionary) -> PackedVector2Array:
 	var out := PackedVector2Array()
-	for outer in region["outers"]:
-		var ring: PackedVector2Array = outer
-		# Bridge any holes contained in this outer into a single simple ring.
-		for hole in region["holes"]:
-			if hole.size() < 3:
-				continue
-			if Geometry2D.is_point_in_polygon(hole[0], outer):
-				ring = _bridge_hole(ring, hole)
-		var indices := Geometry2D.triangulate_polygon(ring)
-		if indices.is_empty():
+	for outer_raw in region["outers"]:
+		var outer: PackedVector2Array = outer_raw
+		if outer.size() < 3:
 			continue
-		for i in range(0, indices.size(), 3):
-			var a := ring[indices[i]]
-			var b := ring[indices[i + 1]]
-			var c := ring[indices[i + 2]]
+		var my_holes: Array = []
+		for hole_raw in region["holes"]:
+			var hole: PackedVector2Array = hole_raw
+			if hole.size() >= 3 and Geometry2D.is_point_in_polygon(_poly_centroid(hole), outer):
+				my_holes.append(hole)
+		var tris := _earcut(outer, my_holes)
+		for t in range(0, tris.size(), 3):
+			var a := tris[t]
+			var b := tris[t + 1]
+			var c := tris[t + 2]
 			if _triangle_signed_area(a, b, c) < 0.0:
-				var swap := b
+				var s := b
 				b = c
-				c = swap
+				c = s
 			out.append(a)
 			out.append(b)
 			out.append(c)
 	return out
 
-func _triangle_signed_area(a: Vector2, b: Vector2, c: Vector2) -> float:
-	return ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * 0.5
+#endregion
 
-# Merge a hole into an outer ring by connecting them with a (zero-width) bridge,
-# producing a single weakly-simple polygon that triangulate_polygon can handle.
-func _bridge_hole(outer: PackedVector2Array, hole: PackedVector2Array) -> PackedVector2Array:
-	# Bridge from the hole's right-most vertex to the nearest visible outer vertex.
-	var m := 0
-	for i in hole.size():
-		if hole[i].x > hole[m].x:
-			m = i
-	var mp := hole[m]
+#region EARCUT (ear-clipping triangulation with hole elimination; port of the
+# standard mapbox/earcut algorithm, without the z-order acceleration)
 
-	var best := -1
-	var best_dist := INF
-	for i in outer.size():
-		if not _bridge_visible(mp, outer[i], outer, hole):
-			continue
-		var d := mp.distance_squared_to(outer[i])
-		if d < best_dist:
-			best_dist = d
-			best = i
-	if best == -1:
-		return outer  # no clear bridge found; leave hole (degrades to over-keeping)
+class _ECNode:
+	var i: int
+	var x: float
+	var y: float
+	var prev: _ECNode = null
+	var next: _ECNode = null
+	var steiner := false
+	func _init(idx: int, px: float, py: float) -> void:
+		i = idx
+		x = px
+		y = py
 
-	var ring := PackedVector2Array()
-	for i in best + 1:
-		ring.append(outer[i])
-	for k in hole.size():
-		ring.append(hole[(m + k) % hole.size()])
-	ring.append(hole[m])
-	ring.append(outer[best])
-	for i in range(best + 1, outer.size()):
-		ring.append(outer[i])
-	return ring
+# Triangulate a simple polygon (outer ring + hole rings) into flat triangle points.
+func _earcut(outer: PackedVector2Array, holes: Array) -> PackedVector2Array:
+	var data := PackedVector2Array(outer)
+	var hole_indices := PackedInt32Array()
+	for h in holes:
+		hole_indices.append(data.size())
+		data.append_array(h)
 
-# True when segment p->q does not properly cross any edge of outer or hole.
-func _bridge_visible(p: Vector2, q: Vector2, outer: PackedVector2Array, hole: PackedVector2Array) -> bool:
-	return _ring_clear(p, q, outer) and _ring_clear(p, q, hole)
+	var out := PackedVector2Array()
+	var outer_node := _ec_linked_list(data, 0, outer.size(), true)
+	if outer_node == null or outer_node.next == outer_node.prev:
+		return out
+	if hole_indices.size() > 0:
+		outer_node = _ec_eliminate_holes(data, hole_indices, outer_node)
 
-func _ring_clear(p: Vector2, q: Vector2, ring: PackedVector2Array) -> bool:
-	var n := ring.size()
-	for i in n:
-		if _segments_cross(p, q, ring[i], ring[(i + 1) % n]):
+	var triangles := PackedInt32Array()
+	_ec_earcut_linked(outer_node, triangles, 0)
+	for idx in triangles:
+		out.append(data[idx])
+	return out
+
+func _ec_signed_area(data: PackedVector2Array, start: int, end: int) -> float:
+	var sum := 0.0
+	var j := end - 1
+	for i in range(start, end):
+		sum += (data[j].x - data[i].x) * (data[i].y + data[j].y)
+		j = i
+	return sum
+
+func _ec_linked_list(data: PackedVector2Array, start: int, end: int, clockwise: bool) -> _ECNode:
+	var last: _ECNode = null
+	if clockwise == (_ec_signed_area(data, start, end) > 0.0):
+		for i in range(start, end):
+			last = _ec_insert(i, data[i], last)
+	else:
+		for i in range(end - 1, start - 1, -1):
+			last = _ec_insert(i, data[i], last)
+	if last != null and _ec_equals(last, last.next):
+		_ec_remove(last)
+		last = last.next
+	return last
+
+func _ec_insert(i: int, pt: Vector2, last: _ECNode) -> _ECNode:
+	var p := _ECNode.new(i, pt.x, pt.y)
+	if last == null:
+		p.prev = p
+		p.next = p
+	else:
+		p.next = last.next
+		p.prev = last
+		last.next.prev = p
+		last.next = p
+	return p
+
+func _ec_remove(p: _ECNode) -> void:
+	p.next.prev = p.prev
+	p.prev.next = p.next
+
+func _ec_equals(a: _ECNode, b: _ECNode) -> bool:
+	return a.x == b.x and a.y == b.y
+
+func _ec_area(p: _ECNode, q: _ECNode, r: _ECNode) -> float:
+	return (q.y - p.y) * (r.x - q.x) - (q.x - p.x) * (r.y - q.y)
+
+func _ec_eliminate_holes(data: PackedVector2Array, hole_indices: PackedInt32Array, outer_node: _ECNode) -> _ECNode:
+	var queue: Array = []
+	var count := hole_indices.size()
+	for i in count:
+		var start := hole_indices[i]
+		var end := data.size() if i == count - 1 else hole_indices[i + 1]
+		var list := _ec_linked_list(data, start, end, false)
+		if list == list.next:
+			list.steiner = true
+		queue.append(_ec_get_leftmost(list))
+	queue.sort_custom(func(a: _ECNode, b: _ECNode) -> bool: return a.x < b.x)
+	var node := outer_node
+	for hole_node in queue:
+		node = _ec_eliminate_hole(hole_node, node)
+	return node
+
+func _ec_eliminate_hole(hole: _ECNode, outer_node: _ECNode) -> _ECNode:
+	var bridge := _ec_find_hole_bridge(hole, outer_node)
+	if bridge == null:
+		return outer_node
+	var bridge_reverse := _ec_split_polygon(bridge, hole)
+	_ec_filter_points(bridge_reverse, bridge_reverse.next)
+	return _ec_filter_points(bridge, bridge.next)
+
+func _ec_get_leftmost(start: _ECNode) -> _ECNode:
+	var p := start.next
+	var leftmost := start
+	while p != start:
+		if p.x < leftmost.x or (p.x == leftmost.x and p.y < leftmost.y):
+			leftmost = p
+		p = p.next
+	return leftmost
+
+func _ec_point_in_triangle(ax: float, ay: float, bx: float, by: float, cx: float, cy: float, px: float, py: float) -> bool:
+	return ((cx - px) * (ay - py) - (ax - px) * (cy - py) >= 0.0
+			and (ax - px) * (by - py) - (bx - px) * (ay - py) >= 0.0
+			and (bx - px) * (cy - py) - (cx - px) * (by - py) >= 0.0)
+
+func _ec_locally_inside(a: _ECNode, b: _ECNode) -> bool:
+	if _ec_area(a.prev, a, a.next) < 0.0:
+		return _ec_area(a, b, a.next) >= 0.0 and _ec_area(a, a.prev, b) >= 0.0
+	return _ec_area(a, b, a.prev) < 0.0 or _ec_area(a, a.next, b) < 0.0
+
+func _ec_find_hole_bridge(hole: _ECNode, outer_node: _ECNode) -> _ECNode:
+	var p := outer_node
+	var hx := hole.x
+	var hy := hole.y
+	var qx := -INF
+	var m: _ECNode = null
+	while true:
+		if hy <= p.y and hy >= p.next.y and p.next.y != p.y:
+			var x := p.x + (hy - p.y) / (p.next.y - p.y) * (p.next.x - p.x)
+			if x <= hx and x > qx:
+				qx = x
+				m = p if p.x < p.next.x else p.next
+				if x == hx:
+					return m
+		p = p.next
+		if p == outer_node:
+			break
+	if m == null:
+		return null
+
+	var stop := m
+	var mx := m.x
+	var my := m.y
+	var tan_min := INF
+	p = m
+	while true:
+		if hx >= p.x and p.x >= mx and hx != p.x:
+			var ax: float
+			var ay: float
+			var cx: float
+			var cy: float
+			if hy < my:
+				ax = hx; ay = hy; cx = qx; cy = hy
+			else:
+				ax = qx; ay = hy; cx = hx; cy = hy
+			if _ec_point_in_triangle(ax, ay, mx, my, cx, cy, p.x, p.y):
+				var tan := absf(hy - p.y) / (hx - p.x)
+				if _ec_locally_inside(p, hole) and (tan < tan_min or (tan == tan_min and p.x > m.x)):
+					m = p
+					tan_min = tan
+		p = p.next
+		if p == stop:
+			break
+	return m
+
+func _ec_split_polygon(a: _ECNode, b: _ECNode) -> _ECNode:
+	var a2 := _ECNode.new(a.i, a.x, a.y)
+	var b2 := _ECNode.new(b.i, b.x, b.y)
+	var an := a.next
+	var bp := b.prev
+	a.next = b
+	b.prev = a
+	a2.next = an
+	an.prev = a2
+	b2.next = a2
+	a2.prev = b2
+	bp.next = b2
+	b2.prev = bp
+	return b2
+
+func _ec_filter_points(start: _ECNode, end: _ECNode) -> _ECNode:
+	if start == null:
+		return start
+	var e := end if end != null else start
+	var p := start
+	var again := true
+	while again or p != e:
+		again = false
+		if not p.steiner and (_ec_equals(p, p.next) or _ec_area(p.prev, p, p.next) == 0.0):
+			_ec_remove(p)
+			p = p.prev
+			e = p
+			if p == p.next:
+				break
+			again = true
+		else:
+			p = p.next
+	return e
+
+func _ec_is_ear(ear: _ECNode) -> bool:
+	var a := ear.prev
+	var b := ear
+	var c := ear.next
+	if _ec_area(a, b, c) >= 0.0:
+		return false  # reflex, cannot be an ear
+	var p := ear.next.next
+	while p != ear.prev:
+		if (_ec_point_in_triangle(a.x, a.y, b.x, b.y, c.x, c.y, p.x, p.y)
+				and _ec_area(p.prev, p, p.next) >= 0.0):
 			return false
+		p = p.next
 	return true
 
-# Proper segment intersection test (shared endpoints / collinear touches ignored).
-func _segments_cross(p1: Vector2, p2: Vector2, p3: Vector2, p4: Vector2) -> bool:
-	var d1 := _orient(p3, p4, p1)
-	var d2 := _orient(p3, p4, p2)
-	var d3 := _orient(p1, p2, p3)
-	var d4 := _orient(p1, p2, p4)
-	return (((d1 > 0.0 and d2 < 0.0) or (d1 < 0.0 and d2 > 0.0))
-			and ((d3 > 0.0 and d4 < 0.0) or (d3 < 0.0 and d4 > 0.0)))
-
-func _orient(a: Vector2, b: Vector2, c: Vector2) -> float:
-	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+func _ec_earcut_linked(ear_start: _ECNode, triangles: PackedInt32Array, pass_num: int) -> void:
+	if ear_start == null:
+		return
+	var ear := ear_start
+	var stop := ear
+	var guard := 0
+	var limit := 1000000
+	while ear.prev != ear.next:
+		guard += 1
+		if guard > limit:
+			return
+		var prev := ear.prev
+		var next := ear.next
+		if _ec_is_ear(ear):
+			triangles.append(prev.i)
+			triangles.append(ear.i)
+			triangles.append(next.i)
+			_ec_remove(ear)
+			ear = next.next
+			stop = next.next
+			continue
+		ear = next
+		if ear == stop:
+			# No ear found in a full loop: filter degenerate points and retry once.
+			if pass_num == 0:
+				_ec_earcut_linked(_ec_filter_points(ear, null), triangles, 1)
+			return
 
 #endregion
