@@ -80,7 +80,7 @@ func _build_toolbar() -> void:
 	_toolbar.add_theme_constant_override("separation", 4)
 
 	var icon := TextureRect.new()
-	icon.texture = load(_ICON)
+	icon.texture = _toolbar_icon()
 	icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	icon.custom_minimum_size = Vector2(16, 16)
 	icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -97,6 +97,16 @@ func _build_toolbar() -> void:
 
 	add_control_to_container(CONTAINER_SPATIAL_EDITOR_MENU, _toolbar)
 	_toolbar.visible = false
+
+# A built-in grayscale editor icon for the progress toolbar, like the lightmap
+# bake button uses. Falls back through a few names in case of theme changes.
+func _toolbar_icon() -> Texture2D:
+	var theme := EditorInterface.get_editor_theme()
+	if theme:
+		for name in ["Bake", "Tools", "MeshInstance3D", "Progress1"]:
+			if theme.has_icon(name, "EditorIcons"):
+				return theme.get_icon(name, "EditorIcons")
+	return null
 
 ## Called by KajmakMap.build() in the editor. Runs the main-thread setup, then
 ## kicks the parse + geometry work onto a worker thread.
