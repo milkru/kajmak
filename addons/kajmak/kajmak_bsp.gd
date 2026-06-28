@@ -51,6 +51,9 @@ var exterior_leaf_count: int = 0
 var _brushes: Array[Brush] = []
 var _root_cell: Array = []   # the grown root cell, kept for portalization
 var _grown: AABB             # the grown world bounds (root cell extent)
+## Optional cancel holder ([KajmakMap.BuildState]); set its cancelled flag to abort
+## the (potentially slow) tree build early.
+var cancel_state: Variant = null
 
 # Stats, filled by build().
 var node_count: int = 0
@@ -118,6 +121,9 @@ func _build_node(cell: Array, brush_indices: PackedInt32Array, depth: int) -> BS
 	node_count += 1
 	if depth > max_depth:
 		max_depth = depth
+
+	if cancel_state != null and cancel_state.cancelled:
+		return _make_leaf(false, depth, cell)  # abort: tree is discarded anyway
 
 	var verts := _cell_vertices(cell)
 	if verts.is_empty():

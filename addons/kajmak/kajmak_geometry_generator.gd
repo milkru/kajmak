@@ -37,7 +37,14 @@ var debug_log_pairs: bool = false
 var bsp_debug: bool = false
 ## Filled by [method _bsp_debug_stats] so a harness can read the result back.
 var bsp_last: Variant = null
+## Optional [KajmakMap.BuildState] holder; when its [code]cancelled[/code] flag is
+## set (from the editor UI on the main thread) the build bails out early.
+var cancel_state: Variant = null
 const _KajmakBSPScript = preload("res://addons/kajmak/kajmak_bsp.gd")
+
+# True when the editor has asked to cancel the in-progress build.
+func _cancelled() -> bool:
+	return cancel_state != null and cancel_state.cancelled
 
 # brush -> [AABB, interior_point], captured from original geometry before culling.
 var _brush_orig: Dictionary = {}
@@ -77,6 +84,9 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 	task_id = WorkerThreadPool.add_group_task(wind_entity_faces, entity_count, -1, false, "Wind Brush Faces")
 	WorkerThreadPool.wait_for_group_task_completion(task_id)
 
+	if _cancelled():
+		return FAILED
+
 	# KAJMAK: global hidden-face culling pre-pass (runs single-threaded here, after
 	# all faces are wound and before parallel surface generation reads them).
 	# Snapshot each brush's original bounds + interior point now, while every face
@@ -99,6 +109,9 @@ func build(build_flags: int, entities: Array[_EntityData]) -> Error:
 		if cull_exterior:
 			declare_step.emit("Culling exterior faces")
 			cull_exterior_faces()
+
+	if _cancelled():
+		return FAILED
 
 	declare_step.emit("Generating surfaces")
 	task_id = WorkerThreadPool.add_group_task(generate_entity_surfaces, entity_count, -1, false, "Generate Surfaces")
@@ -172,6 +185,8 @@ func cull_hidden_faces() -> void:
 
 	# Pass 1: remove faces fully buried inside another solid brush volume.
 	for record in records:
+		if _cancelled():
+			return
 		var face: _FaceData = record["face"]
 		if _face_buried(face.vertices, record["brush"], occluders):
 			to_remove.append([record["brush"], face])
@@ -181,6 +196,8 @@ func cull_hidden_faces() -> void:
 
 	# Pass 2: split faces partially covered by opposite coplanar faces.
 	for record in records:
+		if _cancelled():
+			return
 		var face: _FaceData = record["face"]
 		if removed.has(face):
 			continue
@@ -303,6 +320,7 @@ func _build_occluder_bsp():
 			world = world.merge(bounds[0])
 
 	var bsp := _KajmakBSPScript.new()
+	bsp.cancel_state = cancel_state
 	bsp.build(brushes, world)
 	return bsp
 
@@ -326,6 +344,8 @@ func cull_exterior_faces() -> void:
 			# Brush centroid is the reference for "outward" so we never trust a face
 			# plane that happens to point the wrong way.
 			var brush_centroid: Vector3 = _brush_origin_bounds(brush)[1]
+			if _cancelled():
+				return
 			for face in brush.faces:
 				if not _is_visual_face(face):
 					continue
