@@ -35,10 +35,17 @@ func _get_plugin_name() -> String:
 func _handles(object: Object) -> bool:
 	return _map_script != null and is_instance_valid(object) and object.get_script() == _map_script
 
+const _FUNC_GODOT_NAME := "func_godot"
+
 func _enter_tree() -> void:
+	# Kajmak needs func_godot both installed and enabled: its classes back KajmakMap
+	# and its plugin sets up the project settings and authoring pipeline we rely on.
 	if not FileAccess.file_exists(_FUNC_GODOT_CFG):
-		_warn_missing_func_godot()
-		return  # do not register anything; Kajmak cannot work without func_godot
+		_warn("Kajmak requires the func_godot plugin, which is not installed at addons/func_godot.\n\nInstall func_godot and enable it, then re-enable Kajmak.")
+		return
+	if not EditorInterface.is_plugin_enabled(_FUNC_GODOT_NAME):
+		_warn("Kajmak requires the func_godot plugin, which is installed but not enabled.\n\nEnable func_godot in Project Settings > Plugins, then re-enable Kajmak.")
+		return
 
 	_map_script = load(_MAP_SCRIPT)
 	add_custom_type("KajmakMap", "Node3D", _map_script, load(_ICON))
@@ -58,8 +65,7 @@ func _exit_tree() -> void:
 	if _map_script != null:
 		remove_custom_type("KajmakMap")
 
-func _warn_missing_func_godot() -> void:
-	var msg := "Kajmak requires the func_godot plugin, which was not found at addons/func_godot.\n\nInstall func_godot and enable it, then re-enable Kajmak."
+func _warn(msg: String) -> void:
 	push_error("[Kajmak] " + msg)
 	var dialog := AcceptDialog.new()
 	dialog.title = "Kajmak"
