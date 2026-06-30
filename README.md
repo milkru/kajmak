@@ -19,7 +19,7 @@ Built and tested with `func_godot` 2025.12 and Godot 4.5. Other Godot versions p
 
 Use a `KajmakMap` node instead of a `FuncGodotMap` node.
 
-It is a drop-in replacement. Use the same map file, the same map settings, and the same Build button. The result is the same scene, but with fewer visual surfaces.
+It is a drop-in replacement. Use the same map file, the same map settings and the same Build button. The result is the same scene, but with fewer visual surfaces.
 
 ## Options
 
