@@ -11,7 +11,7 @@ This is the same kind of optimization used by old Quake and Half-Life compilers.
 ## Install
 
 1. Copy `addons/kajmak` into your project, next to `addons/func_godot`.
-2. Open Project Settings, go to Plugins and enable both FuncGodot and `kajmak`.
+2. Open Project Settings, go to Plugins and enable both `func_godot` and `kajmak`.
 
 Built and tested with `func_godot` 2025.12 and Godot 4.5. Other versions may work, but they have not been tested yet.
 
