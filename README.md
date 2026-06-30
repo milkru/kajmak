@@ -26,10 +26,10 @@ It is a drop-in replacement. Use the same map file, the same map settings and th
 On the `KajmakMap` node, under the `kajmak` category:
 
 * **cull_hidden_faces**
-  Removes faces hidden behind other solid brushes. On by default.
+  Removes geometry hidden behind other solid brushes. On by default.
 
 * **cull_exterior_faces**
-  Removes exterior faces that point into the empty void outside a sealed level. Off by default.
+  Removes exterior geometry that point into the empty void outside a sealed level. Off by default.
 
 * **debug_log_pairs**
   Prints removed and split faces to the Output panel. Off by default.
