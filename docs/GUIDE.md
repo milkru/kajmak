@@ -1,65 +1,125 @@
-# Kajmak guide
+# `kajmak` guide
 
-This goes a bit deeper than the README. If you just want to use the thing, the README is enough.
+This guide explains the parts that are too detailed for the README: where `kajmak` hooks into the build, how the culling works, what exterior culling needs, and what the current limits are.
 
-## How it works
+## Build pipeline
 
-Kajmak is a `FuncGodotMap` subclass called `KajmakMap`. When you build, it runs the normal func_godot pipeline (parse, generate brush windings, assemble) but slips one extra pass in between, right after the faces are wound and right before the surfaces are built.
+`kajmak` is a `FuncGodotMap` subclass called `KajmakMap`.
 
-In that pass every face is still sitting in the same shared coordinate space, so Kajmak can compare faces across brushes and entities freely. For each visible face it looks at the solid brushes nearby and works out how much of the face is hidden.
+When you press Build, it still runs the normal `func_godot` pipeline:
 
-* If the whole face is buried inside another solid, the face is dropped.
-* If part of it is covered, Kajmak subtracts the covered patches in 2D, then re triangulates whatever is left with an ear clipping triangulator and rebuilds the face. UVs, normals and tangents come back the same way func_godot makes them, so the split part looks identical to the rest.
-* If nothing covers it, the face is left alone.
+1. parse the map
+2. generate brush windings
+3. build the final scene
 
-Because it works off brush volumes and the original face shapes, the order it processes faces in does not matter, and two faces that cover each other both get trimmed correctly.
+`kajmak` adds one extra geometry pass after the brush faces are generated, but before the final surfaces are built.
 
-## Why a separate plugin
+At that point, every face is still in the same shared coordinate space. That lets `kajmak` compare faces across brushes and entities before `func_godot` turns them into final render surfaces.
 
-func_godot exposes its pipeline classes as public, so Kajmak reuses them and only swaps the geometry step for its own. func_godot files are never modified. Update func_godot whenever you like and Kajmak keeps working, as long as it stays on a version close to what it targets.
+## Hidden face culling
 
-## The options again
+For each visible face, `kajmak` checks nearby solid brushes and works out how much of the face is covered.
 
-* **cull_hidden_faces** Master switch for the hidden face pass. Off means you get a plain func_godot build.
-* **cull_exterior_faces** Off by default. Turns on the exterior void pass described below.
-* **debug_log_pairs** Prints a line per removed or split face to the Output panel. Leave it off unless you are chasing a specific face that is not behaving.
+* If the whole face is buried inside another solid, the face is removed.
+* If only part of the face is covered, the hidden part is cut away in 2D.
+* If the face is not covered, it is left unchanged.
 
-All three live on the `KajmakMap` node in the Kajmak category. You also still have all the normal func_godot settings.
+When a face is split, `kajmak` triangulates the remaining shape with ear clipping and rebuilds the face.
+
+UVs, normals, and tangents are rebuilt the same way `func_godot` builds them, so the trimmed part should look like the original face.
+
+Because this works from brush volumes and original face shapes, the processing order does not matter. Two overlapping faces can both be trimmed correctly.
 
 ## Exterior void culling
 
-This is the optional pass for sealed levels. The hidden face pass only removes faces touching another solid brush. The exterior pass goes after the other big pile of wasted faces, the outer shell of the level that faces the empty void outside, like the back of every outer wall, the underside of the floor and the top of the roof. The player is sealed inside and never sees any of it.
+Exterior culling is optional and is meant for sealed levels.
 
-Here is how it works. Kajmak builds a small BSP out of all your solid brushes, which carves the world into convex cells and tags each one solid or empty. Then it floods the empty cells starting from a point well outside the map. Every empty cell the flood can reach is exterior. Anything it cannot reach, like the inside of a sealed room, stays interior. For each face Kajmak then clips it against those cells. The parts whose front opens onto the exterior void are dropped, and the parts that face a room or sit against solid are kept. So a face fully facing the void is removed, a face fully facing a room is left alone, and a face that straddles the two is split and rebuilt to just its visible piece.
+Hidden face culling only removes faces hidden by other solid brushes. Exterior culling removes faces that point into the empty void outside the level, such as:
 
-The hidden face pass runs first, then the exterior pass trims whatever is left down to its visible part, so the two passes stack cleanly. Both read each brush's interior point from a snapshot taken before any culling, so the order never corrupts either one.
+* backs of outer walls
+* undersides of floors
+* tops of roofs
+* other outside shell faces the player never sees
 
-### Sealing an open map with skip
+`kajmak` builds a small BSP from all solid brushes. The BSP splits the world into convex cells and marks them as solid or empty.
 
-The exterior pass only pays off when the level is actually closed, because the whole trick rests on the void outside being separate from the rooms inside. If your map is open to a skybox, or you just have not walled it off yet, the easy fix is to box it in with skip textured brushes. Skip faces never render, so they cost you nothing in game, but Kajmak still counts them as solid, which is exactly what the flood needs to keep the outside outside. Drop a big skip box around the playable area, or patch over the open bits, and the exterior pass has a sealed shell to work with. This is also the cleanest way to handle a map that is open on purpose, like a courtyard that looks out at a backdrop. Wall it off with skip behind the backdrop and you still get the culling.
+Then it starts from a point outside the map and floods through empty cells:
 
-This pass works best on a sealed map. If there is a gap to the outside, the flood leaks in through it and marks interior cells as exterior, which would cull faces you actually see. Because Kajmak keeps any part of a face that still faces a room, a leak tends to nibble the edges of a few faces near the hole rather than gut a room. Still, treat a sudden missing wall as a sign of a leak and seal it. Turn on debug_log_pairs to see how many outside cells the flood found, a number far larger than you expect usually means it got out.
+* empty cells reached by the flood are exterior
+* empty cells the flood cannot reach are interior
+* solid cells stay solid
 
-## Groups, linked groups, layers
+After that, each face is clipped against those cells.
 
-TrenchBroom groups and layers are just for organising. func_godot folds their brushes into worldspawn, so Kajmak treats everything uniformly and groups need no special care. The only thing to know is that func_godot does not apply linked group transforms, so a linked instance shows up where its raw map coordinates put it.
+* Parts facing the exterior void are removed.
+* Parts facing an interior room are kept.
+* Parts crossing between both are split and rebuilt.
 
-## Limits worth knowing
+The hidden face pass runs first. Exterior culling then trims whatever is left. Both passes use a snapshot of the original brush data, so one pass cannot corrupt the other.
 
-* A brush sunk fully inside another solid, with no face that lines up flush, will not be trimmed. Keep buried detail out of solids if you want it gone, or skip texture the faces yourself.
-* Exterior culling works best on a sealed map. A wall half against terrain and half open is split so only the open part goes, but a real leak to the outside will still cull less than you want until you seal it.
-* Splitting a face (either pass) can leave it as more triangles than it started with, and it leaves extra vertices on the cut edge without welding them to neighbours. On grid snapped geometry this has not shown up as visible cracks, but very off grid builds might show a hairline seam.
+## Sealing maps with skip
+
+Exterior culling works best when the level is sealed. The outside void needs to be separate from the playable space.
+
+If the map is open to a skybox, or not fully closed yet, seal it with skip-textured brushes.
+
+Skip faces do not render, but `kajmak` still treats them as solid. That means they can block the outside flood without adding visible geometry.
+
+You can:
+
+* put a large skip box around the playable area
+* patch only the open parts
+* place skip brushes behind a backdrop or skybox area
+
+This is useful for maps that are open on purpose, like a courtyard looking out at a fake background. Seal behind the background with skip, and exterior culling can still remove the unseen shell.
+
+If there is a real leak to the outside, the flood can enter the level and mark interior cells as exterior. That can remove faces you expected to keep.
+
+If a wall suddenly goes missing, treat it as a leak. Seal the map and rebuild.
+
+## Debugging culling
+
+Enable **debug_log_pairs** on the `KajmakMap` node if you need to inspect what happened.
+
+It prints removed and split faces to the Output panel.
+
+For exterior culling, a much larger outside flood than expected usually means the map has a leak.
+
+## Groups, linked groups, and layers
+
+TrenchBroom groups and layers are only for organisation.
+
+`func_godot` folds their brushes into `worldspawn`, so `kajmak` treats them like normal brushes.
+
+Linked groups are different. `func_godot` does not apply linked group transforms, so linked instances appear where their raw map coordinates place them.
+
+## Limits
+
+* A brush fully buried inside another solid will not always be removed if none of its faces line up flush. Keep buried detail out of solids if you want it gone, or mark those faces with skip yourself.
+* Exterior culling needs a sealed map. A wall that is half against terrain and half open can be split correctly, but a real leak can still cause bad culling.
+* Split faces can end up with more triangles than they had before.
+* Split edges are not welded to neighbouring faces. On grid-snapped geometry this has not caused visible cracks, but very off-grid maps may show tiny seams.
+* Collision is not changed. `kajmak` only removes visual surfaces.
 
 ## Running the tests
 
-The `dev` folder has a small headless test suite. None of it ships, it is just for development.
+The `dev` folder contains a small headless test suite. It is only for development and does not ship with the plugin.
 
 Run the edge case corpus with Godot in headless mode against the test project:
 
-```
+```sh
 godot --headless --path external/func_godot_test_project --script res://dev/verify_corpus.gd
 ```
 
-There are also `verify_skeleton.gd` (proves culling off matches plain func_godot), `verify_cull.gd`, `verify_wedge.gd`, `verify_wedge_split.gd`, `verify_window.gd`, `verify_bsp.gd` (builds the exterior BSP and checks its solid and empty cells against a brute force point in brush test) `verify_exterior.gd` (a sealed room and a leaky room, checks the void flood stays out of the sealed one and removes the outer shell) and `verify_flood.gd` (checks the BSP portal flood agrees with a brute force voxel flood, both directions). Each one builds a tiny map and checks the numbers, so if you change the culling code you can tell straight away whether you broke something.
+Other test scripts:
 
-If you add a new tricky map case, make a small map under `dev/maps`, add an expected result to `verify_corpus.gd`, and it becomes a permanent guard.
+* `verify_skeleton.gd` checks that culling off matches plain `func_godot`.
+* `verify_cull.gd` checks basic hidden face culling.
+* `verify_wedge.gd`, `verify_wedge_split.gd`, and `verify_window.gd` check split face cases.
+* `verify_bsp.gd` builds the exterior BSP and checks solid and empty cells against a brute force point-in-brush test.
+* `verify_exterior.gd` checks a sealed room and a leaky room.
+* `verify_flood.gd` checks that the BSP portal flood matches a brute force voxel flood in both directions.
+
+Each test builds a tiny map and checks the result. If you change the culling code, the tests should show quickly if something broke.
+
+To add a new tricky case, make a small map under `dev/maps`, add the expected result to `verify_corpus.gd`, and it becomes part of the test corpus.
