@@ -18,6 +18,7 @@ const CASES := {
 	"res://dev/maps/far_origin.map":    {"drop": 8.0, "surf": -1, "note": "cull+split far from origin"},
 	"res://dev/maps/skip_cover.map":    {"drop": 4.0, "surf": 0,  "note": "skip face IS an occluder -> wall behind it splits"},
 	"res://dev/maps/floor_boxes.map":   {"drop": 16.0, "surf": 0, "note": "big floor + small boxes: floor must split (earcut big-face/small-hole)"},
+	"res://dev/maps/ignore_property.map": {"drop": 0.0, "surf": 0, "note": "kajmak_ignore entity must NOT occlude and must NOT be culled"},
 }
 
 func _init() -> void:
