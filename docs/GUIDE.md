@@ -57,6 +57,37 @@ After that, each face is clipped against those cells.
 
 The hidden face pass runs first. Exterior culling then trims whatever is left. Both passes use a snapshot of the original brush data, so one pass cannot corrupt the other.
 
+## Ignoring an entity
+
+Culling assumes the geometry it removes stays gone. Two cases break that
+assumption:
+
+* **Translucent brushes** (glass, grates). They occlude nothing, since you see
+  through them, but `kajmak` cannot tell a translucent texture from a solid
+  one. Left alone, a wall glued behind glass gets its covered face split or
+  removed as if the glass were solid — a hole you can see through the glass.
+* **Runtime-removable brushes** (breakables, doors that get freed). At build
+  time they still look solid, so a neighbour's covered face is culled away.
+  Once the brush is removed in-game, that face is gone too and the level has
+  a permanent hole where it used to be.
+
+Set the `ignore_property` key (default `kajmak_ignore`) to `1` on such an
+entity in TrenchBroom. `kajmak` then drops it from culling entirely: it is
+never used as an occluder, and its own faces are never culled or split. The
+tradeoff is the geometry behind/under it keeps whatever faces it would
+otherwise have lost — a few extra triangles, not a gap.
+
+This is a per-entity key/value, read the same way `func_godot` reads
+`_phong` or `_cull_interior_faces` — the entity needs its own classname
+(e.g. `func_detail`), not a brush inside `worldspawn`, since `worldspawn`'s
+brushes all share one entity and one property set. If you need only one
+brush out of many ignored, give it its own entity.
+
+Ignoring an entity also drops it from the exterior BSP (see below), so it can
+no longer help seal the map. A glass pane that is the only thing sealing an
+opening will unseal it once ignored — seal behind it with a skip brush if you
+also use `cull_exterior_faces`.
+
 ## Sealing maps with skip
 
 Exterior culling works best when the level is sealed. The outside void needs to be separate from the playable space.

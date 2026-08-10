@@ -29,6 +29,14 @@ func make_build_state() -> BuildState:
 @export var cull_exterior_faces: bool = false
 ## Print each cull/split decision during the build.
 @export var debug_log_pairs: bool = false
+## Name of a TrenchBroom entity key/value. Any brush entity with this property set to
+## true (or "1") is excluded entirely from culling: it neither occludes other
+## brushes nor gets culled/split itself. Use it for brushes that must keep the
+## full geometry around them intact -- translucent brushes (glass), which would
+## otherwise hide faces behind them that are actually visible through it, and
+## brushes removed at runtime (breakables), which would otherwise leave a gap
+## where a neighbour's face was culled away at build time.
+@export var ignore_property: String = "kajmak_ignore"
 
 ## Dev-only (BSP harness): build the occluder BSP and print stats instead of culling.
 var bsp_debug: bool = false
@@ -88,6 +96,7 @@ func setup_generate(state: BuildState) -> Dictionary:
 	generator.enable_cull = cull_hidden_faces
 	generator.cull_exterior = cull_exterior_faces
 	generator.debug_log_pairs = debug_log_pairs
+	generator.ignore_property = ignore_property
 	generator.bsp_debug = bsp_debug
 	generator.cancel_state = state
 	generator.declare_step.connect(func(s: String) -> void: state.step = s)

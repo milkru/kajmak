@@ -1,0 +1,32 @@
+// Game: FuncGodot
+// Format: Valve
+// Same glued small-box-on-big-box setup as cull_test.map, except the small box
+// is its own entity tagged "kajmak_ignore" "1". It must behave like stock
+// func_godot: not occlude the big box's top (no split) and not get culled
+// itself (its "hidden_tex" bottom stays), even though it is fully flush.
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// brush 0 - big box (ground)
+{
+( 0 0 128 ) ( 0 0 0 ) ( 0 128 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 128 128 0 ) ( 128 0 0 ) ground [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 128 ) ( 128 0 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 128 ) ( 0 128 0 ) ( 128 128 0 ) ground [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 0 128 0 ) ( 0 0 0 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 128 ) ( 0 128 128 ) ( 128 128 128 ) ground [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}
+// entity 1 - small box glued on top, tagged kajmak_ignore; bottom face uses "hidden_tex"
+{
+"classname" "func_detail"
+"kajmak_ignore" "1"
+{
+( 32 32 192 ) ( 32 32 128 ) ( 32 96 128 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 192 ) ( 96 96 128 ) ( 96 32 128 ) metal [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 32 32 192 ) ( 96 32 128 ) ( 32 32 128 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 192 ) ( 32 96 128 ) ( 96 96 128 ) metal [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 96 128 ) ( 32 96 128 ) ( 32 32 128 ) hidden_tex [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 32 32 192 ) ( 32 96 192 ) ( 96 96 192 ) metal [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

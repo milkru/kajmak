@@ -18,6 +18,9 @@ var enable_cull: bool = true
 var cull_exterior: bool = false
 ## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
+## Name of a raw entity key/value; entities with it set truthy are excluded from
+## culling entirely (neither occlude nor get culled). See [KajmakMap.ignore_property].
+var ignore_property: String = "kajmak_ignore"
 ## Dev hook (dev/verify_bsp.gd): build the occluder BSP and print stats instead of
 ## culling. Off in normal builds, so output is unchanged.
 var bsp_debug: bool = false
@@ -139,6 +142,8 @@ func _snapshot_brushes() -> void:
 	for entity in entity_data:
 		if not _entity_renders(entity):
 			continue
+		if _entity_ignored(entity):
+			continue
 		for brush in entity.brushes:
 			if _brush_has_solid_face(brush):
 				_brush_orig[brush] = _brush_bounds(brush)
@@ -157,6 +162,8 @@ func cull_hidden_faces() -> void:
 	for entity_index in entity_data.size():
 		var entity: _EntityData = entity_data[entity_index]
 		if not _entity_renders(entity):
+			continue
+		if _entity_ignored(entity):
 			continue
 		for brush in entity.brushes:
 			# Solid (any non-clip/non-origin face, including skip) brushes occlude.
@@ -334,6 +341,8 @@ func cull_exterior_faces() -> void:
 		var entity: _EntityData = entity_data[entity_index]
 		if not _entity_renders(entity):
 			continue
+		if _entity_ignored(entity):
+			continue
 		for brush in entity.brushes:
 			# Outward is judged against the brush centroid, not the face plane's sign.
 			var brush_centroid: Vector3 = _brush_origin_bounds(brush)[1]
@@ -488,6 +497,27 @@ func _entity_renders(entity: _EntityData) -> bool:
 	if def is FuncGodotFGDSolidClass:
 		return def.build_visuals
 	return true
+
+# Reads [member ignore_property] off the entity's own map key/values (same
+# convention func_godot uses for map_settings.cull_interior_faces_property), not
+# off the shared FGD class resource -- so any single brush entity can opt out on
+# its own, in TrenchBroom, with no FGD change. Works whether the property is a
+# real bool (declared on the entity's FGD class) or a raw "1"/"true" string
+# (undeclared property, the common case).
+func _entity_ignored(entity: _EntityData) -> bool:
+	if not entity:
+		return false
+	return _property_truthy(entity.properties.get(ignore_property, false))
+
+func _property_truthy(value: Variant) -> bool:
+	if value is bool:
+		return value
+	if value is String:
+		var s: String = (value as String).strip_edges().to_lower()
+		return s == "1" or s == "true"
+	if value is int or value is float:
+		return value != 0
+	return false
 
 # A face that is actually rendered (and so can be culled or split).
 func _is_visual_face(face: _FaceData) -> bool:

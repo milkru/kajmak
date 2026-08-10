@@ -34,6 +34,14 @@ On the `KajmakMap` node, under the `kajmak` category:
 * **debug_log_pairs**
   Prints removed and split faces to the Output panel. Off by default.
 
+* **ignore_property**
+  Name of a TrenchBroom entity key. Any brush entity with this key set to `1`
+  is skipped entirely: it will not occlude other brushes, and it will not be
+  culled or split itself. Defaults to `kajmak_ignore`. Use it on translucent
+  brushes (glass) and on brushes you remove at runtime (breakables, platforms, doors) — both
+  would otherwise leave a gap where a neighbouring face got culled away at
+  build time. See [docs/GUIDE.md](docs/GUIDE.md).
+
 Collision is never changed. `kajmak` only removes visual surfaces.
 
 See [docs/GUIDE.md](docs/GUIDE.md) for details about exterior culling, skip brushes, leaks, limits, and tests.
