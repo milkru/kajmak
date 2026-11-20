@@ -1,0 +1,30 @@
+// Game: FuncGodot
+// Format: Valve
+// A door sunk into a static box. The door is a func_geo (a brush entity not in
+// static_classes, defined in the test project, unlike func_door), so it may move:
+// neither hides the other's faces, nothing is culled (a hole would show once it moves).
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// box A 0..64 x/y, z 0..16
+{
+( 0 0 16 ) ( 0 0 0 ) ( 0 64 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 16 ) ( 64 64 0 ) ( 64 0 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 16 ) ( 64 0 0 ) ( 0 0 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 16 ) ( 0 64 0 ) ( 64 64 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 0 ) ( 0 64 0 ) ( 0 0 0 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 16 ) ( 0 64 16 ) ( 64 64 16 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}
+{
+"classname" "func_geo"
+// door 16..48 x/y, z 8..40, sunk into A's top
+{
+( 16 16 40 ) ( 16 16 8 ) ( 16 48 8 ) door [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 40 ) ( 48 48 8 ) ( 48 16 8 ) door [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 16 16 40 ) ( 48 16 8 ) ( 16 16 8 ) door [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 40 ) ( 16 48 8 ) ( 48 48 8 ) door [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 8 ) ( 16 48 8 ) ( 16 16 8 ) door [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 16 16 40 ) ( 16 48 40 ) ( 48 48 40 ) door [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

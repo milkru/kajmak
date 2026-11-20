@@ -1,0 +1,27 @@
+// Game: FuncGodot
+// Format: Valve
+// A small box inside a big one, flush with its top. The small box's bottom and sides
+// are buried (2 m^2); its top is not (the big box doesn't reach above it), and as the
+// later brush it keeps its face, cut out of the big box's top (1 m^2). No hole.
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// box A 0..64 x/y, z 0..16
+{
+( 0 0 16 ) ( 0 0 0 ) ( 0 64 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 16 ) ( 64 64 0 ) ( 64 0 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 16 ) ( 64 0 0 ) ( 0 0 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 16 ) ( 0 64 0 ) ( 64 64 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 0 ) ( 0 64 0 ) ( 0 0 0 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 16 ) ( 0 64 16 ) ( 64 64 16 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// box B 16..48 x/y, z 8..16, flush with A's top
+{
+( 16 16 16 ) ( 16 16 8 ) ( 16 48 8 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 16 ) ( 48 48 8 ) ( 48 16 8 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 16 16 16 ) ( 48 16 8 ) ( 16 16 8 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 16 ) ( 16 48 8 ) ( 48 48 8 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 8 ) ( 16 48 8 ) ( 16 16 8 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 16 16 16 ) ( 16 48 16 ) ( 48 48 16 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

@@ -21,12 +21,19 @@ func make_build_state() -> BuildState:
 	return BuildState.new()
 
 @export_category("Kajmak")
-## Cull faces hidden behind adjacent solid geometry (qbsp/vbsp-style). Off = builds
-## identically to stock func_godot.
+## Cull faces hidden behind adjacent solid geometry (qbsp/vbsp-style). Off, with the
+## other passes off = builds identically to stock func_godot.
 @export var cull_hidden_faces: bool = true
 ## Also cull faces opening onto the exterior void (vis-style). Independent of
 ## [member cull_hidden_faces]; only safe on sealed maps with no leaks to the outside.
 @export var cull_exterior_faces: bool = false
+## Weld T-junctions after culling: where a corner of one face lies on another face's
+## edge, that face gets the corner too, so no hairline cracks open between them (light
+## leaks through hollow brushes). Off, with both culls off = stock func_godot.
+@export var weld_t_junctions: bool = true
+## Classnames of static brush entities: their brushes hide each other's faces. Other
+## brush entities (doors, lifts) may move, so only their own brushes hide their faces.
+@export var static_classes: PackedStringArray = ["worldspawn", "func_detail", "func_group"]
 ## Print each cull/split decision during the build.
 @export var debug_log_pairs: bool = false
 
@@ -87,6 +94,8 @@ func setup_generate(state: BuildState) -> Dictionary:
 	var generator := KajmakGeometryGenerator.new(map_settings, hyperplane_size)
 	generator.enable_cull = cull_hidden_faces
 	generator.cull_exterior = cull_exterior_faces
+	generator.weld_t_junctions = weld_t_junctions
+	generator.static_classes = static_classes
 	generator.debug_log_pairs = debug_log_pairs
 	generator.bsp_debug = bsp_debug
 	generator.cancel_state = state

@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://d3twjq0d5cc2e"
+path="res://.godot/imported/pillar_slab.map-e7a44be42c06cdc9a83aa404e9c5f044.tres"
+
+[deps]
+
+source_file="res://dev/maps/pillar_slab.map"
+dest_files=["res://.godot/imported/pillar_slab.map-e7a44be42c06cdc9a83aa404e9c5f044.tres"]
+
+[params]
+

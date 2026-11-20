@@ -1,0 +1,27 @@
+// Game: FuncGodot
+// Format: Valve
+// Two overlapping boxes, flush on top, bottom, front and back. Each end face
+// inside the other box is buried (1 m^2 each); where flush faces overlap, only the
+// later brush keeps its face (top and bottom 2 m^2 each, front and back 0.5 each).
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// box A 0..64 x, 0..64 y, z 0..16
+{
+( 0 0 16 ) ( 0 0 0 ) ( 0 64 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 16 ) ( 64 64 0 ) ( 64 0 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 16 ) ( 64 0 0 ) ( 0 0 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 16 ) ( 0 64 0 ) ( 64 64 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 0 ) ( 0 64 0 ) ( 0 0 0 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 16 ) ( 0 64 16 ) ( 64 64 16 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// box B 32..96 x, 0..64 y, z 0..16
+{
+( 32 0 16 ) ( 32 0 0 ) ( 32 64 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 64 16 ) ( 96 64 0 ) ( 96 0 0 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 32 0 16 ) ( 96 0 0 ) ( 32 0 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 64 16 ) ( 32 64 0 ) ( 96 64 0 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 96 64 0 ) ( 32 64 0 ) ( 32 0 0 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 32 0 16 ) ( 32 64 16 ) ( 96 64 16 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://d22h5a2vhogq0"
+path="res://.godot/imported/small_cover.map-442760a03e4a145357108b3c64aedd11.tres"
+
+[deps]
+
+source_file="res://dev/maps/small_cover.map"
+dest_files=["res://.godot/imported/small_cover.map-442760a03e4a145357108b3c64aedd11.tres"]
+
+[params]
+

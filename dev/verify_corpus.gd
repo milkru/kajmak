@@ -18,6 +18,11 @@ const CASES := {
 	"res://dev/maps/far_origin.map":    {"drop": 8.0, "surf": -1, "note": "cull+split far from origin"},
 	"res://dev/maps/skip_cover.map":    {"drop": 4.0, "surf": 0,  "note": "skip face IS an occluder -> wall behind it splits"},
 	"res://dev/maps/floor_boxes.map":   {"drop": 16.0, "surf": 0, "note": "big floor + small boxes: floor must split (earcut big-face/small-hole)"},
+	"res://dev/maps/small_cover.map":   {"drop": 0.5, "surf": 0,  "note": "small box on a big floor: the floor under it goes too (no area-relative cutoff)"},
+	"res://dev/maps/pillar_slab.map":   {"drop": 4.0, "surf": 0,  "note": "pillar through a slab: parts inside the other brush go (volume covers)"},
+	"res://dev/maps/flush_overlap.map": {"drop": 7.0, "surf": 0,  "note": "overlapping boxes: buried ends go, flush overlaps keep one face"},
+	"res://dev/maps/flush_nested.map":  {"drop": 3.0, "surf": 0,  "note": "box flush inside a box: its top stays, cut out of the outer top (no hole)"},
+	"res://dev/maps/mover.map":         {"drop": 0.0, "surf": 0,  "note": "door sunk into a static box: a moving entity hides nothing and is hidden by nothing"},
 }
 
 func _init() -> void:

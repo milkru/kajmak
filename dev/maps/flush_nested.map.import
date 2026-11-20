@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://bkwgch4ldjdos"
+path="res://.godot/imported/flush_nested.map-713ae4f6a4ee3e42f225eedc6dea2d79.tres"
+
+[deps]
+
+source_file="res://dev/maps/flush_nested.map"
+dest_files=["res://.godot/imported/flush_nested.map-713ae4f6a4ee3e42f225eedc6dea2d79.tres"]
+
+[params]
+

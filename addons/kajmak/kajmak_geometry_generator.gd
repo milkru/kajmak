@@ -5,17 +5,27 @@ class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
 ## Adds a global hidden-face cull pre-pass (qbsp/vbsp-style) without touching
 ## func_godot. It runs after winding and before surface generation, while faces are
 ## still in shared id-space, so they compare directly across brushes and textures.
-## Buried faces are removed; faces partly covered by an opposite coplanar face are
-## split and the visible remainder re-triangulated.
+## Buried faces are removed; faces partly covered by an opposite coplanar face, or
+## partly inside another brush, are split and the visible remainder re-triangulated.
 ##
-## Not handled (see RESEARCH.md): T-junction welding, so splits can leave hairline
-## cracks; illusionary/liquid brushes are treated as occluders.
+## A last pass welds T-junctions (a corner of one face on another face's edge), so
+## neighbouring faces share their corners and leave no hairline cracks.
+##
+## Not handled (see RESEARCH.md): illusionary/liquid brushes are treated as occluders.
 
-## When false, builds identically to stock func_godot (regression escape hatch).
+## When false (with [member cull_exterior] and [member weld_t_junctions] off), builds
+## identically to stock func_godot (regression escape hatch).
 var enable_cull: bool = true
 ## When true, also remove faces whose front side opens onto the exterior void of a
 ## sealed map (BSP flood from outside). Off by default and independent of culling.
 var cull_exterior: bool = false
+## When true, weld T-junctions after culling (see [method weld_t_junction_faces]).
+var weld_t_junctions: bool = true
+## Classnames of static brush entities. Their brushes hide each other's faces. Any other
+## brush entity (a door, a lift) may move, so only its own brushes hide its faces and its
+## brushes hide nothing else, as qbsp works per entity.
+var static_classes: PackedStringArray = ["worldspawn", "func_detail", "func_group"]
+var _entity_static: Array = []  # per entity index: in static_classes
 ## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
 ## Dev hook (dev/verify_bsp.gd): build the occluder BSP and print stats instead of
@@ -33,17 +43,22 @@ func _cancelled() -> bool:
 # brush -> [AABB, interior_point], snapshotted from original geometry before culling.
 var _brush_orig: Dictionary = {}
 
-# Hidden-pass coverage thresholds (fraction of face area): a face is removed below
-# _FULL_COVERAGE_EPSILON remaining and left whole below _OVERLAP_EPSILON covered.
-const _FULL_COVERAGE_EPSILON := 1.0e-3
+# Below this area (in the geometry's units, squared) a face is degenerate and left alone.
 const _OVERLAP_EPSILON := 1.0e-4
+# How far (map units) a brush must reach in front of a face to bury the part of it
+# inside: above float noise, below the thinnest brush TrenchBroom's grid makes (1/8).
+const _VOLUME_PROBE := 1.0 / 64.0
+# Float noise, not geometry: an area up to a strip this wide (map units, scaled like
+# the geometry) along a face's outline. Covers, remainders and trims below it are
+# ignored. It scales with the outline, not the area: a fraction of the area let a big
+# face ignore real brushes on it (a 4x16 skirting on a 1120x576 floor is under 1e-4 of
+# it), and the floor under them stayed, lit through the hollow brushes and bleeding
+# into the visible floor's lightmap.
+const _NOISE_WIDTH := 1.0 / 1024.0
 const _COPLANAR_TOLERANCE := 0.001
 const _DEDUP_PRECISION := 1024.0
 const _VOLUME_TOLERANCE := 0.001  # point-in-brush distance tolerance (Godot units)
-# Exterior pass (fraction of face area): below _EXTERIOR_AREA_EPS fronting interior
-# is removed, above (1 - it) is kept whole, between is trimmed; _DEGENERATE_AREA
-# drops slivers. A noise floor, NOT a coverage gate.
-const _EXTERIOR_AREA_EPS := 1.0e-4
+# Exterior pass: _DEGENERATE_AREA drops slivers (in the geometry's units, squared).
 const _DEGENERATE_AREA := 1.0e-9
 # Reject a merged exterior triangulation (use the fan fallback) when its area drifts
 # from the kept area by more than this fraction.
@@ -109,6 +124,10 @@ func cull_step() -> Error:
 		if cull_exterior:
 			declare_step.emit("Culling exterior faces")
 			cull_exterior_faces()
+		# Last: culling and splitting leave the outlines that need welding.
+		if weld_t_junctions and not _cancelled():
+			declare_step.emit("Welding T-junctions")
+			weld_t_junction_faces()
 
 	if _cancelled():
 		return FAILED
@@ -148,11 +167,17 @@ func _brush_origin_bounds(brush: _BrushData) -> Array:
 	return _brush_orig.get(brush, _brush_bounds(brush))
 
 ## Remove faces buried inside another solid brush, and split faces partly covered
-## by an opposite coplanar face down to their visible remainder.
+## (by an opposite coplanar face, by another brush's volume, or by a later brush's flush
+## face) down to their visible remainder.
 func cull_hidden_faces() -> void:
-	var occluders: Array = []   # {brush, aabb, centroid}
+	var occluders: Array = []   # {brush, entity, aabb, centroid, points}
+	var order: Dictionary = {}  # brush -> its place in the map (later brushes win ties)
 	var records: Array = []     # {entity, brush, face}
-	var bucket: Dictionary = {} # Vector4i -> Array[record]
+	var bucket: Dictionary = {} # Vector4i -> Array[{face, brush, entity, verts}]
+
+	_entity_static.clear()
+	for entity in entity_data:
+		_entity_static.append(entity != null and String(entity.properties.get("classname", "")) in static_classes)
 
 	for entity_index in entity_data.size():
 		var entity: _EntityData = entity_data[entity_index]
@@ -162,12 +187,18 @@ func cull_hidden_faces() -> void:
 			# Solid (any non-clip/non-origin face, including skip) brushes occlude.
 			if _brush_has_solid_face(brush):
 				var bounds := _brush_origin_bounds(brush)
-				occluders.append({"brush": brush, "aabb": bounds[0], "centroid": bounds[1]})
+				var points := PackedVector3Array()
+				for f in brush.faces:
+					points.append_array(f.vertices)
+				order[brush] = occluders.size()
+				occluders.append({"brush": brush, "entity": entity_index, "aabb": bounds[0],
+					"centroid": bounds[1], "points": points})
 			for face in brush.faces:
 				# Snapshot the cover winding now: splitting mutates face.vertices, and
 				# covers must reflect the original geometry, not a half-cut neighbour.
 				if _is_solid_face(face):
-					var entry := {"face": face, "verts": face.vertices.duplicate()}
+					var entry := {"face": face, "brush": brush, "entity": entity_index,
+						"verts": face.vertices.duplicate()}
 					var key := _plane_key(face.plane)
 					if bucket.has(key):
 						bucket[key].append(entry)
@@ -180,19 +211,22 @@ func cull_hidden_faces() -> void:
 	var to_remove: Array = []      # [brush, face]
 	var removed: Dictionary = {}   # face -> true
 	var split_count: int = 0
+	var grid := _occluder_grid(occluders)
 
 	# Pass 1: remove faces fully buried inside another solid brush volume.
 	for record in records:
 		if _cancelled():
 			return
 		var face: _FaceData = record["face"]
-		if _face_buried(face.vertices, record["brush"], occluders):
+		var near := _occluders_near(grid, occluders, _aabb_of(face.vertices))
+		if _face_buried(face, record["brush"], record["entity"], near):
 			to_remove.append([record["brush"], face])
 			removed[face] = true
 			if debug_log_pairs:
 				print("[KAJMAK] e%d '%s' buried -> removed" % [record["entity"], face.texture])
 
-	# Pass 2: split faces partially covered by opposite coplanar faces.
+	# Pass 2: split faces partly covered by opposite coplanar faces or partly inside
+	# other solid brushes.
 	for record in records:
 		if _cancelled():
 			return
@@ -204,8 +238,6 @@ func cull_hidden_faces() -> void:
 		opposite.normal = -opposite.normal
 		opposite.d = -opposite.d
 		var opposite_key := _plane_key(opposite)
-		if not bucket.has(opposite_key):
-			continue
 
 		# In-plane basis matching func_godot's winding frame (v = u x normal) so
 		# rebuilt triangles keep the same front-facing orientation.
@@ -218,9 +250,10 @@ func cull_hidden_faces() -> void:
 		var face_area := absf(_signed_area_2d(face_2d))
 		if face_area <= _OVERLAP_EPSILON:
 			continue
+		var noise := _map_units(_NOISE_WIDTH) * _perimeter_2d(face_2d)
 
 		var covers: Array = []
-		for other in bucket[opposite_key]:
+		for other in bucket.get(opposite_key, []):
 			var other_face: _FaceData = other["face"]
 			if other_face == face:
 				continue
@@ -228,13 +261,41 @@ func cull_hidden_faces() -> void:
 				continue
 			if not other_face.plane.has_point(face.plane.get_center(), _COPLANAR_TOLERANCE):
 				continue
+			if not _may_cover(other["entity"], record["entity"]):
+				continue
 			# Project the snapshot (original) winding, not the possibly-mutated live one.
 			var other_2d := _project_2d(other["verts"], origin, u, v)
 			# Opposite-facing faces project with reversed winding; normalise to CCW
 			# so the boolean ops below treat it as a solid region, not a hole.
 			if _signed_area_2d(other_2d) < 0.0:
 				other_2d.reverse()
-			if _intersection_area_2d(face_2d, other_2d) <= face_area * _OVERLAP_EPSILON:
+			if _intersection_area_2d(face_2d, other_2d) <= noise:
+				continue
+			covers.append(other_2d)
+		var near := _occluders_near(grid, occluders, _aabb_of(face.vertices))
+		for cover in _volume_covers(face, record["brush"], record["entity"], near, origin, u, v):
+			if absf(_signed_area_2d(cover)) > noise:
+				covers.append(cover)
+		# Overlapping faces flush on one plane, facing the same way (stacked steps' sides):
+		# both would draw and z-fight. As in qbsp, the later brush keeps its face.
+		var own_order: int = order.get(record["brush"], -1)
+		for other in bucket.get(_plane_key(face.plane), []):
+			var other_face: _FaceData = other["face"]
+			# A face pass 1 removed keeps nothing: the region stays this face's.
+			if other_face == face or removed.has(other_face) or not _is_visual_face(other_face):
+				continue
+			if order.get(other["brush"], -1) <= own_order:
+				continue
+			if not _may_cover(other["entity"], record["entity"]):
+				continue
+			if not face.plane.normal.is_equal_approx(other_face.plane.normal):
+				continue
+			if not other_face.plane.has_point(face.plane.get_center(), _COPLANAR_TOLERANCE):
+				continue
+			var other_2d := _project_2d(other["verts"], origin, u, v)
+			if _signed_area_2d(other_2d) < 0.0:
+				other_2d.reverse()
+			if _intersection_area_2d(face_2d, other_2d) <= noise:
 				continue
 			covers.append(other_2d)
 
@@ -247,12 +308,12 @@ func cull_hidden_faces() -> void:
 		var remainder := _subtract(face_2d, covers)
 		var remaining_area := _region_area(remainder)
 
-		if remaining_area <= face_area * _FULL_COVERAGE_EPSILON:
+		if remaining_area <= noise:
 			to_remove.append([record["brush"], face])
 			removed[face] = true
 			continue
 
-		if remaining_area >= face_area * (1.0 - _FULL_COVERAGE_EPSILON):
+		if remaining_area >= face_area - noise:
 			continue  # negligible overlap; leave the face untouched
 
 		var triangles := _triangulate_region(remainder)
@@ -353,11 +414,13 @@ func cull_exterior_faces() -> void:
 				var origin := face.plane.get_center()
 
 				var total_area := 0.0
+				var noise := 0.0   # over the triangles' outlines: at most a few times the face's
 				var fragments: Array = []   # visible parts as 2D CCW polygons
 				var keep_area := 0.0
 				for tri: PackedVector3Array in _face_triangles_3d(face):
 					var t2d := _project_2d(tri, origin, u, v)
 					total_area += absf(_triangle_signed_area(t2d[0], t2d[1], t2d[2]))
+					noise += _map_units(_NOISE_WIDTH) * _perimeter_2d(t2d)
 					for frag: PackedVector3Array in bsp.face_visible_fragments(tri, outward):
 						var f2d := _project_2d(frag, origin, u, v)
 						if f2d.size() < 3:
@@ -372,11 +435,11 @@ func cull_exterior_faces() -> void:
 
 				if total_area <= 0.0:
 					continue
-				if keep_area <= total_area * _EXTERIOR_AREA_EPS:
+				if keep_area <= noise:
 					to_remove.append([brush, face])
 					if debug_log_pairs:
 						print("[KAJMAK] e%d '%s' faces void -> removed" % [entity_index, face.texture])
-				elif keep_area < total_area * (1.0 - _EXTERIOR_AREA_EPS):
+				elif keep_area < total_area - noise:
 					# Merge the fragments before triangulating so a trim doesn't shatter
 					# into slivers; fall back to a fan if the merge looks wrong.
 					var tris := _exterior_triangulate(fragments)
@@ -477,6 +540,307 @@ func _bsp_debug_stats() -> void:
 
 #endregion
 
+#region T-JUNCTION WELD
+
+# Map units (scaled like the geometry when used). Corners closer than _WELD_MERGE are
+# one corner (float noise from plane intersections); a corner within _WELD_EPSILON of an
+# edge, and further than that from its ends, lies on the edge. _WELD_CELL is the spatial
+# hash cell for the edge search.
+const _WELD_MERGE := 1.0 / 256.0
+const _WELD_EPSILON := 1.0 / 128.0
+const _WELD_CELL := 64.0
+var _weld_merge := 0.0
+var _weld_epsilon := 0.0
+var _weld_cell_size := 0.0
+const _WELD_MAX_CELLS := 4096  # above this, an edge is searched cell by cell along it
+
+## Weld T-junctions, as qbsp's tjunc pass does. Wherever a corner of one face lies on
+## the outline of another, the second face gets that corner too, so neighbours share
+## their corners exactly: no hairline cracks for light to leak through (culling makes
+## brushes hollow, so a crack opens onto whatever lies behind). Corners that differ
+## only by float noise are merged first. A triangle that gains corners on one side is
+## fanned from the opposite corner, otherwise from a new point at its centre; faces keep
+## their winding. Only the outline is welded: a corner inside a face covers no crack.
+func weld_t_junction_faces() -> void:
+	_weld_merge = _map_units(_WELD_MERGE)
+	_weld_epsilon = _map_units(_WELD_EPSILON)
+	_weld_cell_size = _map_units(_WELD_CELL)
+	var faces: Array = []
+	var brushes: Array = []         # the brush of each face
+	for entity in entity_data:
+		if not _entity_renders(entity):
+			continue
+		for brush in entity.brushes:
+			for face in brush.faces:
+				if _is_visual_face(face):
+					faces.append(face)
+					brushes.append(brush)
+
+	# One id per corner, float noise merged.
+	var points: Array = []          # id -> Vector3
+	var merge_grid: Dictionary = {} # Vector3i -> Array of ids
+	var face_ids: Array = []        # per face: corner id per vertex
+	for face: _FaceData in faces:
+		var ids := PackedInt32Array()
+		for p in face.vertices:
+			ids.append(_weld_point_id(p, points, merge_grid))
+		face_ids.append(ids)
+
+	var grid: Dictionary = {}       # Vector3i -> Array of ids, for the edge search
+	for id in points.size():
+		var cell := _weld_cell(points[id])
+		if grid.has(cell):
+			grid[cell].append(id)
+		else:
+			grid[cell] = [id]
+
+	var edge_cache: Dictionary = {} # Vector2i(lo, hi) -> ids on the edge, ordered lo to hi
+	var welded := 0
+	var added := 0
+	var collapsed := 0
+	for f in faces.size():
+		if _cancelled():
+			return
+		var face: _FaceData = faces[f]
+		var ids: PackedInt32Array = face_ids[f]
+		var tris := _weld_face_triangles(face, ids)
+
+		# Triangles the merge collapsed go first, so the outline is counted without them.
+		var changed := false
+		var kept := PackedInt32Array()
+		for t in range(0, tris.size(), 3):
+			if tris[t] == tris[t + 1] or tris[t + 1] == tris[t + 2] or tris[t + 2] == tris[t]:
+				changed = true
+				collapsed += 1
+			else:
+				for k in 3:
+					kept.append(tris[t + k])
+
+		# The outline: edges used by one triangle of the face only.
+		var edge_use: Dictionary = {}
+		for t in range(0, kept.size(), 3):
+			for k in 3:
+				var key := _weld_edge_key(kept[t + k], kept[t + (k + 1) % 3])
+				edge_use[key] = edge_use.get(key, 0) + 1
+
+		var out_tris: Array = []    # triples of corner ids; negative = a centre point
+		var centres: Array = []     # Vector3 per new centre point, in order of use
+		# The way the face's triangles face, from its own winding before the merge: merging
+		# corners can flip a sliver, so a triangle's merged corners can't be trusted for it.
+		var facing := _weld_facing(face)
+		for t in range(0, kept.size(), 3):
+			var c := [kept[t], kept[t + 1], kept[t + 2]]
+			if _weld_normal(c, points, centres).dot(facing) < 0.0:
+				c = [c[0], c[2], c[1]]  # a sliver the merge flipped: wind it back
+				changed = true
+			var sides: Array = []   # corners on each side c[k] -> c[k+1], in that order
+			var with_points := 0
+			var side_with_points := -1
+			var gained := 0
+			for k in 3:
+				var a: int = c[k]
+				var b: int = c[(k + 1) % 3]
+				var key := _weld_edge_key(a, b)
+				var on: Array = []
+				if edge_use[key] == 1:
+					if not edge_cache.has(key):
+						edge_cache[key] = _weld_edge_points(key.x, key.y, points, grid)
+					on = edge_cache[key]
+					if a != key.x:
+						on = on.duplicate()
+						on.reverse()
+				sides.append(on)
+				if not on.is_empty():
+					with_points += 1
+					side_with_points = k
+					gained += on.size()
+			if with_points == 0:
+				out_tris.append_array(c)
+				continue
+			# The triangle's outline with its new corners, in winding order.
+			var ring: Array = []
+			for k in 3:
+				ring.append(c[k])
+				ring.append_array(sides[k])
+			var fan: Array = []
+			if with_points == 1:
+				# Fan from the corner opposite the side that gained corners.
+				var start := ring.find(c[(side_with_points + 2) % 3])
+				var r: Array = ring.slice(start) + ring.slice(0, start)
+				for i in range(1, r.size() - 1):
+					fan.append_array([r[0], r[i], r[i + 1]])
+			if fan.is_empty() or not _weld_fan_faces(fan, facing, points, centres):
+				# Fan from a new point at the centre: no fan corner sits on a split side.
+				var centre := -1 - centres.size()
+				centres.append((points[c[0]] + points[c[1]] + points[c[2]]) / 3.0)
+				fan = []
+				for i in ring.size():
+					fan.append_array([centre, ring[i], ring[(i + 1) % ring.size()]])
+				if not _weld_fan_faces(fan, facing, points, centres):
+					# A sliver thinner than the weld tolerance: any fan flips a triangle,
+					# which is worse than the hairline it would close. Leave it whole.
+					centres.pop_back()
+					out_tris.append_array(c)
+					continue
+			changed = true
+			added += gained
+			out_tris.append_array(fan)
+
+		if changed and out_tris.is_empty():
+			(brushes[f] as _BrushData).faces.erase(face)  # every triangle collapsed
+		elif changed:
+			welded += 1
+			_weld_rebuild_face(face, out_tris, points, centres)
+		else:
+			# Same triangles; the corners take their merged positions.
+			var verts := face.vertices
+			for i in verts.size():
+				verts[i] = points[ids[i]]
+			face.vertices = verts
+
+	if debug_log_pairs:
+		print("[KAJMAK] T-junction weld: %d corner(s) added, %d collapsed triangle(s) dropped, %d face(s) rebuilt" % [
+			added, collapsed, welded])
+
+# The id of the merged corner at p, adding p when no corner lies within _WELD_MERGE.
+func _weld_point_id(p: Vector3, points: Array, merge_grid: Dictionary) -> int:
+	var key := Vector3i((p / _weld_merge).round())
+	for dx in range(-1, 2):
+		for dy in range(-1, 2):
+			for dz in range(-1, 2):
+				var near := key + Vector3i(dx, dy, dz)
+				if merge_grid.has(near):
+					for id in merge_grid[near]:
+						if (points[id] as Vector3).distance_to(p) <= _weld_merge:
+							return id
+	var id := points.size()
+	points.append(p)
+	if merge_grid.has(key):
+		merge_grid[key].append(id)
+	else:
+		merge_grid[key] = [id]
+	return id
+
+func _weld_cell(p: Vector3) -> Vector3i:
+	return Vector3i((p / _weld_cell_size).floor())
+
+func _weld_edge_key(a: int, b: int) -> Vector2i:
+	return Vector2i(mini(a, b), maxi(a, b))
+
+# A face's triangles as corner ids: its index buffer, or a fan over its vertices.
+func _weld_face_triangles(face: _FaceData, ids: PackedInt32Array) -> PackedInt32Array:
+	var tris := PackedInt32Array()
+	if face.indices.size() >= 3:
+		for i in face.indices:
+			tris.append(ids[i])
+	else:
+		for i in range(1, ids.size() - 1):
+			for id in [ids[0], ids[i], ids[i + 1]]:
+				tris.append(id)
+	return tris
+
+# The corners lying on edge a-b (strictly between its ends), ordered from a to b.
+func _weld_edge_points(a: int, b: int, points: Array, grid: Dictionary) -> Array:
+	var pa: Vector3 = points[a]
+	var pb: Vector3 = points[b]
+	var length := pa.distance_to(pb)
+	if length <= 2.0 * _weld_epsilon:
+		return []
+	var dir := (pb - pa) / length
+
+	var cells: Array = []
+	var lo := _weld_cell(pa.min(pb) - Vector3.ONE * _weld_epsilon)
+	var hi := _weld_cell(pa.max(pb) + Vector3.ONE * _weld_epsilon)
+	var span := hi - lo + Vector3i.ONE
+	if span.x * span.y * span.z <= _WELD_MAX_CELLS:
+		for x in range(lo.x, hi.x + 1):
+			for y in range(lo.y, hi.y + 1):
+				for z in range(lo.z, hi.z + 1):
+					cells.append(Vector3i(x, y, z))
+	else:
+		# Long diagonal edge: sample it every half cell; a corner near the edge is then
+		# in a sample's cell or a neighbour of it.
+		var seen: Dictionary = {}
+		var steps := ceili(length / (_weld_cell_size * 0.5))
+		for s in steps + 1:
+			var cell := _weld_cell(pa.lerp(pb, float(s) / steps))
+			for dx in range(-1, 2):
+				for dy in range(-1, 2):
+					for dz in range(-1, 2):
+						seen[cell + Vector3i(dx, dy, dz)] = true
+		cells = seen.keys()
+
+	var found: Array = []  # [distance from a, id]
+	for cell in cells:
+		if not grid.has(cell):
+			continue
+		for id in grid[cell]:
+			if id == a or id == b:
+				continue
+			var rel: Vector3 = points[id] - pa
+			var t := rel.dot(dir)
+			if t <= _weld_epsilon or t >= length - _weld_epsilon:
+				continue
+			if (rel - dir * t).length_squared() > _weld_epsilon * _weld_epsilon:
+				continue
+			found.append([t, id])
+	found.sort_custom(func(x: Array, y: Array) -> bool: return x[0] < y[0])
+	var out: Array = []
+	for entry in found:
+		out.append(entry[1])
+	return out
+
+# A corner's position: a merged corner, or (negative id) one of the face's centre points.
+func _weld_pos(id: int, points: Array, centres: Array) -> Vector3:
+	return points[id] if id >= 0 else centres[-1 - id]
+
+# A triangle's (unnormalised) normal, from its corner ids.
+func _weld_normal(tri: Array, points: Array, centres: Array) -> Vector3:
+	var a := _weld_pos(tri[0], points, centres)
+	return (_weld_pos(tri[1], points, centres) - a).cross(_weld_pos(tri[2], points, centres) - a)
+
+# The face's plane normal, signed the way its triangles wind (from its widest triangle,
+# on its own corners before the weld moves any).
+func _weld_facing(face: _FaceData) -> Vector3:
+	var verts := face.vertices
+	var idx := face.indices
+	if idx.size() < 3:
+		idx = PackedInt32Array()
+		for i in range(1, verts.size() - 1):
+			idx.append(0)
+			idx.append(i)
+			idx.append(i + 1)
+	var best := 0.0
+	var sign := 1.0
+	for t in range(0, idx.size(), 3):
+		var a := verts[idx[t]]
+		var d := (verts[idx[t + 1]] - a).cross(verts[idx[t + 2]] - a).dot(face.plane.normal)
+		if absf(d) > best:
+			best = absf(d)
+			sign = signf(d)
+	return face.plane.normal * sign
+
+# Whether every triangle of a fan faces the given way.
+func _weld_fan_faces(fan: Array, facing: Vector3, points: Array, centres: Array) -> bool:
+	for i in range(0, fan.size(), 3):
+		if _weld_normal([fan[i], fan[i + 1], fan[i + 2]], points, centres).dot(facing) <= 0.0:
+			return false
+	return true
+
+# Rebuild a face from corner-id triangles (negative ids: its centre points).
+func _weld_rebuild_face(face: _FaceData, tris: Array, points: Array, centres: Array) -> void:
+	var vertices := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var local: Dictionary = {}  # corner id -> vertex index
+	for id: int in tris:
+		if not local.has(id):
+			local[id] = vertices.size()
+			vertices.append(points[id] if id >= 0 else centres[-1 - id])
+		indices.append(local[id])
+	_set_face_mesh(face, vertices, indices)
+
+#endregion
+
 #region OCCLUDER / FACE CLASSIFICATION
 
 # Mirrors func_godot's render gate: a solid class that builds visuals, or any
@@ -545,16 +909,122 @@ func _points_inside_brush(points: PackedVector3Array, planes: Array[Plane], cent
 					return false
 	return true
 
-# True when a face is entirely contained in some occluder brush other than its own.
-func _face_buried(vertices: PackedVector3Array, own_brush: _BrushData, occluders: Array) -> bool:
-	var face_aabb := _aabb_of(vertices)
+# The parts of a face inside other solid brushes (that may cover it, see _may_cover), as
+# 2D covers (CCW) in the face's frame: qbsp's CSG step. Stacked or overlapping brushes bury parts of each other's faces where
+# no face lines up flush (a stair tread running on under the next step), and a buried
+# part left in a hollow brush catches light that bleeds into the visible part's lightmap.
+# A brush covers the part of the face inside it only if it reaches in front of the face:
+# one the face rests against from behind, or one flush beside it, covers nothing; one
+# touching it face to face does.
+func _volume_covers(face: _FaceData, own_brush: _BrushData, own_entity: int, occluders: Array, origin: Vector3, u: Vector3, v: Vector3) -> Array:
+	var out: Array = []
+	var outward := _outward(face, own_brush)
 	for occluder in occluders:
-		if occluder["brush"] == own_brush:
+		if occluder["brush"] == own_brush or not _may_cover(occluder["entity"], own_entity):
 			continue
-		var occ_aabb: AABB = occluder["aabb"]
-		if not occ_aabb.grow(_VOLUME_TOLERANCE).intersects(face_aabb):
+		if not _reaches_in_front(occluder, face.vertices[0], outward):
 			continue
-		if _points_inside_brush(vertices, occluder["brush"].planes, occluder["centroid"]):
+		var poly := face.vertices
+		for plane: Plane in occluder["brush"].planes:
+			poly = _clip_to_inside(poly, plane, occluder["centroid"])
+			if poly.size() < 3:
+				break
+		if poly.size() < 3:
+			continue
+		var poly_2d := _project_2d(poly, origin, u, v)
+		if _signed_area_2d(poly_2d) < 0.0:
+			poly_2d.reverse()
+		out.append(poly_2d)
+	return out
+
+# Whether brushes of one entity may hide faces of another: within an entity always;
+# across entities only between static ones (see [member static_classes]).
+func _may_cover(cover_entity: int, face_entity: int) -> bool:
+	return cover_entity == face_entity or (_entity_static[cover_entity] and _entity_static[face_entity])
+
+# A face's normal pointing away from its own brush.
+func _outward(face: _FaceData, brush: _BrushData) -> Vector3:
+	var outward := face.plane.normal
+	if (face.get_centroid() - _brush_origin_bounds(brush)[1]).dot(outward) < 0.0:
+		outward = -outward
+	return outward
+
+# Whether an occluder reaches further than _VOLUME_PROBE in front of a face's plane: only
+# then can it bury part of the face. One the face rests against from behind, or one flush
+# with it, doesn't (flush faces are settled by brush order).
+func _reaches_in_front(occluder: Dictionary, anchor: Vector3, outward: Vector3) -> bool:
+	var reach := _map_units(_VOLUME_PROBE)
+	for p: Vector3 in occluder["points"]:
+		if (p - anchor).dot(outward) > reach:
+			return true
+	return false
+
+# Map units: the cell of the grid that finds the brushes near a face.
+const _OCCLUDER_CELL := 256.0
+
+func _occluder_grid(occluders: Array) -> Dictionary:
+	var grid: Dictionary = {}   # Vector3i -> Array of occluder indices
+	var cell := _map_units(_OCCLUDER_CELL)
+	for i in occluders.size():
+		var box: AABB = (occluders[i]["aabb"] as AABB).grow(_VOLUME_TOLERANCE)
+		var lo := Vector3i((box.position / cell).floor())
+		var hi := Vector3i((box.end / cell).floor())
+		for x in range(lo.x, hi.x + 1):
+			for y in range(lo.y, hi.y + 1):
+				for z in range(lo.z, hi.z + 1):
+					var key := Vector3i(x, y, z)
+					if grid.has(key):
+						grid[key].append(i)
+					else:
+						grid[key] = [i]
+	return grid
+
+# The occluders whose bounds touch `box`, each once.
+func _occluders_near(grid: Dictionary, occluders: Array, box: AABB) -> Array:
+	var cell := _map_units(_OCCLUDER_CELL)
+	box = box.grow(_VOLUME_TOLERANCE)
+	var lo := Vector3i((box.position / cell).floor())
+	var hi := Vector3i((box.end / cell).floor())
+	var seen: Dictionary = {}
+	var out: Array = []
+	for x in range(lo.x, hi.x + 1):
+		for y in range(lo.y, hi.y + 1):
+			for z in range(lo.z, hi.z + 1):
+				for i in grid.get(Vector3i(x, y, z), []):
+					if seen.has(i):
+						continue
+					seen[i] = true
+					var occluder: Dictionary = occluders[i]
+					if (occluder["aabb"] as AABB).grow(_VOLUME_TOLERANCE).intersects(box):
+						out.append(occluder)
+	return out
+
+# The part of a convex polygon on the inside of a brush plane (the side of `inside`).
+func _clip_to_inside(poly: PackedVector3Array, plane: Plane, inside: Vector3) -> PackedVector3Array:
+	var side := -1.0 if plane.distance_to(inside) < 0.0 else 1.0
+	var out := PackedVector3Array()
+	var n := poly.size()
+	for i in n:
+		var a := poly[i]
+		var b := poly[(i + 1) % n]
+		var da := plane.distance_to(a) * side
+		var db := plane.distance_to(b) * side
+		if da >= 0.0:
+			out.append(a)
+		if (da >= 0.0) != (db >= 0.0):
+			out.append(a.lerp(b, da / (da - db)))
+	return out
+
+# True when a face is entirely inside an occluder brush (not its own) that reaches in
+# front of it.
+func _face_buried(face: _FaceData, own_brush: _BrushData, own_entity: int, occluders: Array) -> bool:
+	var outward := _outward(face, own_brush)
+	for occluder in occluders:
+		if occluder["brush"] == own_brush or not _may_cover(occluder["entity"], own_entity):
+			continue
+		if not _reaches_in_front(occluder, face.vertices[0], outward):
+			continue
+		if _points_inside_brush(face.vertices, occluder["brush"].planes, occluder["centroid"]):
 			return true
 	return false
 
@@ -587,7 +1057,10 @@ func _rebuild_face(face: _FaceData, triangles: PackedVector2Array, origin: Vecto
 			lookup[key] = index
 			vertices.append(origin + u * p.x + v * p.y)
 			indices.append(index)
+	_set_face_mesh(face, vertices, indices)
 
+# Set a face's vertices and triangles, with flat normals and func_godot's tangents.
+func _set_face_mesh(face: _FaceData, vertices: PackedVector3Array, indices: PackedInt32Array) -> void:
 	face.vertices = vertices
 	face.indices = indices
 	face.normals = PackedVector3Array()
@@ -640,6 +1113,17 @@ func _signed_area_2d(poly: PackedVector2Array) -> float:
 		var b := poly[(i + 1) % n]
 		area += a.x * b.y - b.x * a.y
 	return area * 0.5
+
+# Map units (as in the .map file) in the generator's units: func_godot has scaled them.
+func _map_units(x: float) -> float:
+	return x * (map_settings.scale_factor if map_settings else 1.0)
+
+# Length of a closed 2D polygon's outline.
+func _perimeter_2d(poly: PackedVector2Array) -> float:
+	var length := 0.0
+	for i in poly.size():
+		length += poly[i].distance_to(poly[(i + 1) % poly.size()])
+	return length
 
 # Total area of the intersection of two 2D polygons.
 func _intersection_area_2d(a: PackedVector2Array, b: PackedVector2Array) -> float:

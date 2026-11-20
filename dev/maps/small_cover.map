@@ -1,0 +1,27 @@
+// Game: FuncGodot
+// Format: Valve
+// A big floor (2048x2048) with one small box (16x16) on it. The box covers under
+// 1e-4 of the floor, so a cutoff relative to the face's area ignored it and left
+// the floor under it. Box bottom and the floor under it must both go (0.5 m^2).
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// floor 0..2048 x/y, z 0..16
+{
+( 0 0 16 ) ( 0 0 0 ) ( 0 2048 0 ) floor [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 2048 2048 16 ) ( 2048 2048 0 ) ( 2048 0 0 ) floor [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 16 ) ( 2048 0 0 ) ( 0 0 0 ) floor [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 2048 2048 16 ) ( 0 2048 0 ) ( 2048 2048 0 ) floor [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 2048 2048 0 ) ( 0 2048 0 ) ( 0 0 0 ) floor [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 16 ) ( 0 2048 16 ) ( 2048 2048 16 ) floor [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// small box on top
+{
+( 64 64 48 ) ( 64 64 16 ) ( 64 80 16 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 48 ) ( 80 80 16 ) ( 80 64 16 ) box [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 64 64 48 ) ( 80 64 16 ) ( 64 64 16 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 48 ) ( 64 80 16 ) ( 80 80 16 ) box [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 16 ) ( 64 80 16 ) ( 64 64 16 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 64 64 48 ) ( 64 80 48 ) ( 80 80 48 ) box [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}

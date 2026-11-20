@@ -18,11 +18,17 @@ At that point, every face is still in the same shared coordinate space. That let
 
 ## Hidden face culling
 
-For each visible face, `kajmak` checks nearby solid brushes and works out how much of the face is covered.
+For each visible face, `kajmak` checks nearby solid brushes and works out how much of the face is covered. A face is covered where another brush touches it face to face, and where it runs inside another brush that reaches in front of it (stacked steps, a pillar through a slab), as qbsp's CSG step does.
+
+Brushes of the static entities (`static_classes`: worldspawn, func_detail and func_group by default) cover each other. Any other brush entity, such as a door or a lift, may move: only its own brushes cover its faces, and its brushes cover nothing else, so no hole shows when it moves. qbsp also works per entity.
 
 * If the whole face is buried inside another solid, the face is removed.
 * If only part of the face is covered, the hidden part is cut away in 2D.
 * If the face is not covered, it is left unchanged.
+
+Where two brushes overlap with faces flush on one plane, facing the same way, both faces would draw and flicker. As in qbsp, the later brush in the map keeps its face and the earlier one loses the overlapping part. A brush flush with a face doesn't bury it: only a brush that reaches in front of a face can.
+
+Covers too small to matter are ignored: anything thinner than a strip 1/1024 of a map unit wide along the face's outline, which is float noise. The cut scales with the outline, not the area, so a small brush on a big floor still cuts its hole.
 
 When a face is split, `kajmak` triangulates the remaining shape with ear clipping and rebuilds the face.
 
@@ -56,6 +62,14 @@ After that, each face is clipped against those cells.
 * Parts crossing between both are split and rebuilt.
 
 The hidden face pass runs first. Exterior culling then trims whatever is left. Both passes use a snapshot of the original brush data, so one pass cannot corrupt the other.
+
+## T-junction weld
+
+Culling cuts faces, so a corner of one face often ends in the middle of a neighbour's edge (a T-junction). The two faces then don't share that point, and a hairline crack can open between them. Culled brushes are hollow, so light shines through such a crack from whatever lies behind it.
+
+The weld runs last. Wherever a corner of one face lies on another face's outline, that face gets the corner too, as qbsp's tjunc pass does. Corners that differ only by float noise are merged first. A triangle that gains corners on one side is fanned from the opposite corner, otherwise from a new point at its centre.
+
+After culling and welding, the faces of the static brushes form the closed boundary of their union: every edge is shared by two triangles, and no triangle is flipped (a sliver thinner than the weld tolerance is left unwelded instead).
 
 ## Sealing maps with skip
 
@@ -95,10 +109,9 @@ Linked groups are different. `func_godot` does not apply linked group transforms
 
 ## Limits
 
-* A brush fully buried inside another solid will not always be removed if none of its faces line up flush. Keep buried detail out of solids if you want it gone, or mark those faces with skip yourself.
 * Exterior culling needs a sealed map. A wall that is half against terrain and half open can be split correctly, but a real leak can still cause bad culling.
 * Split faces can end up with more triangles than they had before.
-* Split edges are not welded to neighbouring faces. On grid-snapped geometry this has not caused visible cracks, but very off-grid maps may show tiny seams.
+* Welding adds corners and triangles to the faces it touches.
 * Collision is not changed. `kajmak` only removes visual surfaces.
 
 ## Running the tests
@@ -113,7 +126,8 @@ godot --headless --path external/func_godot_test_project --script res://dev/veri
 
 Other test scripts:
 
-* `verify_skeleton.gd` checks that culling off matches plain `func_godot`.
+* `verify_skeleton.gd` checks that every pass off matches plain `func_godot`.
+* `verify_weld.gd` checks that culled and welded maps have no T-junctions and no open edges, and that the check finds T-junctions when the weld is off.
 * `verify_cull.gd` checks basic hidden face culling.
 * `verify_wedge.gd`, `verify_wedge_split.gd`, and `verify_window.gd` check split face cases.
 * `verify_bsp.gd` builds the exterior BSP and checks solid and empty cells against a brute force point-in-brush test.

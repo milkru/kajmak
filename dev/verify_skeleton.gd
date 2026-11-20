@@ -17,9 +17,10 @@ const MAP_FILE := "res://maps/test1.map"
 
 func _init() -> void:
 	var stock := _build_and_measure(FuncGodotMap.new())
-	# Culling off must reproduce stock func_godot exactly (regression guard).
+	# Every pass off must reproduce stock func_godot exactly (regression guard).
 	var kajmak_map := KajmakMap.new()
 	kajmak_map.cull_hidden_faces = false
+	kajmak_map.weld_t_junctions = false
 	var kajmak := _build_and_measure(kajmak_map)
 
 	print("\n==== KAJMAK SKELETON VERIFY ====")

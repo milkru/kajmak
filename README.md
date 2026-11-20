@@ -31,6 +31,12 @@ On the `KajmakMap` node, under the `kajmak` category:
 * **cull_exterior_faces**
   Removes exterior geometry that point into the empty void outside a sealed level. Off by default.
 
+* **weld_t_junctions**
+  After culling, adds each face corner that lies on a neighbouring face's edge to that face, so neighbours share their corners and no hairline cracks open between them. On by default.
+
+* **static_classes**
+  Classnames of the brush entities that never move (worldspawn, func_detail, func_group by default). Their brushes hide each other's faces; any other brush entity, such as a door, only hides its own.
+
 * **debug_log_pairs**
   Prints removed and split faces to the Output panel. Off by default.
 

@@ -1,0 +1,27 @@
+// Game: FuncGodot
+// Format: Valve
+// A pillar through a slab, no faces flush. The slab's top and bottom inside the
+// pillar (1 m^2 each) and the pillar's sides inside the slab (4 x 0.5 m^2) are
+// buried: brush volumes cover them (qbsp's CSG step), not coplanar faces.
+{
+"classname" "worldspawn"
+"mapversion" "220"
+// slab 0..128 x/y, z 0..16
+{
+( 0 0 16 ) ( 0 0 0 ) ( 0 128 0 ) slab [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 16 ) ( 128 128 0 ) ( 128 0 0 ) slab [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 0 0 16 ) ( 128 0 0 ) ( 0 0 0 ) slab [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 16 ) ( 0 128 0 ) ( 128 128 0 ) slab [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 128 128 0 ) ( 0 128 0 ) ( 0 0 0 ) slab [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 0 0 16 ) ( 0 128 16 ) ( 128 128 16 ) slab [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+// pillar 48..80 x/y, z -16..48
+{
+( 48 48 48 ) ( 48 48 -16 ) ( 48 80 -16 ) pillar [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 48 ) ( 80 80 -16 ) ( 80 48 -16 ) pillar [ 0 1 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 48 48 48 ) ( 80 48 -16 ) ( 48 48 -16 ) pillar [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 48 ) ( 48 80 -16 ) ( 80 80 -16 ) pillar [ 1 0 0 0 ] [ 0 0 -1 0 ] 0 1 1
+( 80 80 -16 ) ( 48 80 -16 ) ( 48 48 -16 ) pillar [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+( 48 48 48 ) ( 48 80 48 ) ( 80 80 48 ) pillar [ 1 0 0 0 ] [ 0 -1 0 0 ] 0 1 1
+}
+}
