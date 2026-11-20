@@ -17,7 +17,7 @@ const MAPS := [
 	"res://dev/maps/window.map", "res://dev/maps/wedge.map", "res://dev/maps/wedge_split.map",
 	"res://dev/maps/small_cover.map", "res://dev/maps/pillar_slab.map",
 	"res://dev/maps/flush_overlap.map", "res://dev/maps/flush_nested.map",
-	"res://dev/maps/mover.map",
+	"res://dev/maps/mover.map", "res://dev/maps/octagon_hall.map",
 ]
 const MERGE := 1.0 / 8192.0  # Godot units: corners closer than this are one
 const ON_EDGE := 1.0 / 4096.0

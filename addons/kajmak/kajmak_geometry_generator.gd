@@ -316,8 +316,12 @@ func cull_hidden_faces() -> void:
 		if remaining_area >= face_area - noise:
 			continue  # negligible overlap; leave the face untouched
 
-		var triangles := _triangulate_region(remainder)
+		var triangles := _drop_slivers(_triangulate_region(remainder))
 		if not _split_is_valid(face_2d, face_area, covers, triangles):
+			if debug_log_pairs:
+				print("[KAJMAK] e%d '%s' split rejected (%d triangles, %d covers, %.1f%% remains) -> kept whole: %s" % [
+					record["entity"], face.texture, triangles.size() / 3, covers.size(),
+					100.0 * remaining_area / face_area, _split_problem(face_2d, face_area, covers, triangles)])
 			continue  # keep the whole face — a missed cull is fine, corruption is not
 		_rebuild_face(face, triangles, origin, u, v)
 		split_count += 1
@@ -360,6 +364,47 @@ func _split_is_valid(face_2d: PackedVector2Array, face_area: float, covers: Arra
 	if tri_area < face_area - summed_cover - face_area * 0.01 - 1.0e-5:
 		return false
 	return true
+
+# Triangles thinner than the noise width: clipping leaves near-duplicate corners (float noise),
+# and the triangulation can turn them into slivers of no area whose centroid lies on a cover's
+# edge, which `_split_is_valid` would count as inside the cover and refuse the split. They draw
+# nothing; the weld pass closes the seam they leave.
+func _drop_slivers(triangles: PackedVector2Array) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	var width := _map_units(_NOISE_WIDTH)
+	for t in range(0, triangles.size(), 3):
+		var a := triangles[t]
+		var b := triangles[t + 1]
+		var c := triangles[t + 2]
+		var longest := maxf(a.distance_to(b), maxf(b.distance_to(c), c.distance_to(a)))
+		if longest > 0.0 and 2.0 * absf(_triangle_signed_area(a, b, c)) / longest < width:
+			continue
+		out.append(a)
+		out.append(b)
+		out.append(c)
+	return out
+
+# Why `_split_is_valid` turned a split down (debug log only).
+func _split_problem(face_2d: PackedVector2Array, face_area: float, covers: Array, triangles: PackedVector2Array) -> String:
+	if triangles.is_empty():
+		return "no triangles"
+	var tri_area := 0.0
+	for t in range(0, triangles.size(), 3):
+		var a := triangles[t]
+		var b := triangles[t + 1]
+		var c := triangles[t + 2]
+		var area := absf(_triangle_signed_area(a, b, c))
+		tri_area += area
+		var centroid := (a + b + c) / 3.0
+		if not Geometry2D.is_point_in_polygon(centroid, face_2d):
+			return "triangle %s %s %s (area %.4f) outside the face" % [a, b, c, area]
+		for cover in covers:
+			if Geometry2D.is_point_in_polygon(centroid, cover):
+				return "triangle %s %s %s (area %.4f) inside a cover" % [a, b, c, area]
+	var summed_cover := 0.0
+	for cover in covers:
+		summed_cover += _intersection_area_2d(cover, face_2d)
+	return "triangles %.2f, face %.2f, covers %.2f" % [tri_area, face_area, summed_cover]
 
 # BSP over the snapshotted occluder brushes (so a prior pass erasing faces cannot
 # unseal the world), each with its interior point for consistent plane orientation.

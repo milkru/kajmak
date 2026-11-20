@@ -1,0 +1,14 @@
+[remap]
+
+importer="func_godot.map"
+type="Resource"
+uid="uid://bhtwuiopchlv5"
+path="res://.godot/imported/octagon_hall.map-ac0a0965e590477afe80adcccb7706d6.tres"
+
+[deps]
+
+source_file="res://dev/maps/octagon_hall.map"
+dest_files=["res://.godot/imported/octagon_hall.map-ac0a0965e590477afe80adcccb7706d6.tres"]
+
+[params]
+
