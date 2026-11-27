@@ -22,6 +22,8 @@ For each visible face, `kajmak` checks nearby solid brushes and works out how mu
 
 Brushes of the static entities (`static_classes`: worldspawn, func_detail and func_group by default) cover each other. Any other brush entity, such as a door or a lift, may move: only its own brushes cover its faces, and its brushes cover nothing else, so no hole shows when it moves. qbsp also works per entity.
 
+Brushes of the see-through entities (`see_through_classes`, none by default) cover nothing: an alpha cutout, such as a railing panel standing on a floor, would otherwise cut a hole in the floor that shows through its gaps. qbsp treats Quake's `func_detail_fence` the same way. Solid brushes still cover their faces.
+
 * If the whole face is buried inside another solid, the face is removed.
 * If only part of the face is covered, the hidden part is cut away in 2D.
 * If the face is not covered, it is left unchanged.

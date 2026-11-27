@@ -37,6 +37,9 @@ On the `KajmakMap` node, under the `kajmak` category:
 * **static_classes**
   Classnames of the brush entities that never move (worldspawn, func_detail, func_group by default). Their brushes hide each other's faces; any other brush entity, such as a door, only hides its own.
 
+* **see_through_classes**
+  Classnames of see-through brush entities, such as alpha cutouts (a railing panel, foliage). Their brushes hide no face, so the floor under a railing stays whole; solid brushes still hide their faces. None by default.
+
 * **debug_log_pairs**
   Prints removed and split faces to the Output panel. Off by default.
 

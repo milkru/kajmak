@@ -34,6 +34,10 @@ func make_build_state() -> BuildState:
 ## Classnames of static brush entities: their brushes hide each other's faces. Other
 ## brush entities (doors, lifts) may move, so only their own brushes hide their faces.
 @export var static_classes: PackedStringArray = ["worldspawn", "func_detail", "func_group"]
+## Classnames of see-through brush entities (alpha cutouts: a railing panel, foliage): their
+## brushes hide no face, so the floor under a railing stays whole. Solid brushes still hide
+## their faces. None by default.
+@export var see_through_classes: PackedStringArray = []
 ## Print each cull/split decision during the build.
 @export var debug_log_pairs: bool = false
 
@@ -96,6 +100,7 @@ func setup_generate(state: BuildState) -> Dictionary:
 	generator.cull_exterior = cull_exterior_faces
 	generator.weld_t_junctions = weld_t_junctions
 	generator.static_classes = static_classes
+	generator.see_through_classes = see_through_classes
 	generator.debug_log_pairs = debug_log_pairs
 	generator.bsp_debug = bsp_debug
 	generator.cancel_state = state

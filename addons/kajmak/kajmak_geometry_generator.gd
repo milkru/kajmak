@@ -26,6 +26,9 @@ var weld_t_junctions: bool = true
 ## brushes hide nothing else, as qbsp works per entity.
 var static_classes: PackedStringArray = ["worldspawn", "func_detail", "func_group"]
 var _entity_static: Array = []  # per entity index: in static_classes
+## Classnames of see-through brush entities (alpha cutouts: a railing panel, foliage). Their
+## brushes hide no face, not even each other's; solid brushes still hide their faces.
+var see_through_classes: PackedStringArray = []
 ## When true, prints per-face cull/split decisions.
 var debug_log_pairs: bool = false
 ## Dev hook (dev/verify_bsp.gd): build the occluder BSP and print stats instead of
@@ -42,6 +45,7 @@ func _cancelled() -> bool:
 
 # brush -> [AABB, interior_point], snapshotted from original geometry before culling.
 var _brush_orig: Dictionary = {}
+var _see_through: Dictionary = {}  # snapshotted brushes of see_through_classes: they seal nothing
 
 # Below this area (in the geometry's units, squared) a face is degenerate and left alone.
 const _OVERLAP_EPSILON := 1.0e-4
@@ -155,12 +159,16 @@ func generate_post_cull(build_flags: int) -> Error:
 # orient their volume tests from a point that is inside whichever runs first.
 func _snapshot_brushes() -> void:
 	_brush_orig.clear()
+	_see_through.clear()
 	for entity in entity_data:
 		if not _entity_renders(entity):
 			continue
+		var hides := _entity_hides(entity)
 		for brush in entity.brushes:
 			if _brush_has_solid_face(brush):
 				_brush_orig[brush] = _brush_bounds(brush)
+				if not hides:
+					_see_through[brush] = true
 
 # Snapshotted [AABB, interior] for a brush, falling back to live geometry.
 func _brush_origin_bounds(brush: _BrushData) -> Array:
@@ -183,9 +191,10 @@ func cull_hidden_faces() -> void:
 		var entity: _EntityData = entity_data[entity_index]
 		if not _entity_renders(entity):
 			continue
+		var hides := _entity_hides(entity)
 		for brush in entity.brushes:
-			# Solid (any non-clip/non-origin face, including skip) brushes occlude.
-			if _brush_has_solid_face(brush):
+			# Solid (any non-clip/non-origin face, including skip) brushes occlude, unless see-through.
+			if hides and _brush_has_solid_face(brush):
 				var bounds := _brush_origin_bounds(brush)
 				var points := PackedVector3Array()
 				for f in brush.faces:
@@ -196,7 +205,7 @@ func cull_hidden_faces() -> void:
 			for face in brush.faces:
 				# Snapshot the cover winding now: splitting mutates face.vertices, and
 				# covers must reflect the original geometry, not a half-cut neighbour.
-				if _is_solid_face(face):
+				if hides and _is_solid_face(face):
 					var entry := {"face": face, "brush": brush, "entity": entity_index,
 						"verts": face.vertices.duplicate()}
 					var key := _plane_key(face.plane)
@@ -413,6 +422,8 @@ func _build_occluder_bsp():
 	var world := AABB()
 	var first := true
 	for brush in _brush_orig:
+		if _see_through.has(brush):
+			continue  # see-through brushes seal nothing
 		var bounds: Array = _brush_orig[brush]
 		brushes.append({"planes": brush.planes, "inside": bounds[1]})
 		if first:
@@ -911,6 +922,11 @@ func _is_solid_face(face: _FaceData) -> bool:
 	return (face.vertices.size() >= 3
 			and not is_clip(face)
 			and not is_origin(face))
+
+# Whether an entity's brushes hide faces: all but the see-through classes
+# (see [member see_through_classes]).
+func _entity_hides(entity: _EntityData) -> bool:
+	return not String(entity.properties.get("classname", "")) in see_through_classes
 
 func _brush_has_solid_face(brush: _BrushData) -> bool:
 	for face in brush.faces:

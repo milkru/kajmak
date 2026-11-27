@@ -28,6 +28,11 @@ func _init() -> void:
 	kajmak_map.debug_log_pairs = true
 	var kajmak := _stats(kajmak_map, true)
 
+	# The same map with its entity see-through: its brushes hide nothing, so nothing goes.
+	var see_through_map := KajmakMap.new()
+	see_through_map.see_through_classes = ["worldspawn"]
+	var see_through := _stats(see_through_map, true)
+
 	print("\n==== KAJMAK CULL/SPLIT VERIFY ====")
 	print("stock  : surfaces %d, verts %d, tris %d, area %.3f" % [stock.surfaces, stock.verts, stock.tris, stock.area])
 	print("kajmak : surfaces %d, verts %d, tris %d, area %.3f" % [kajmak.surfaces, kajmak.verts, kajmak.tris, kajmak.area])
@@ -37,10 +42,12 @@ func _init() -> void:
 	var area_ok: bool = absf(area_drop - EXPECTED_AREA_DROP) <= AREA_TOLERANCE
 	# A split adds vertices to the top face (frame has more verts than a quad).
 	var split_ok: bool = kajmak.tris > stock.tris - 2  # net triangles did not collapse
-	var ok: bool = surfaces_ok and area_ok
+	var see_through_ok: bool = see_through.surfaces == stock.surfaces and absf(see_through.area - stock.area) <= AREA_TOLERANCE
+	var ok: bool = surfaces_ok and area_ok and see_through_ok
 
 	print("surfaces      : %d (expect %d)            -> %s" % [kajmak.surfaces, stock.surfaces - 1, "OK" if surfaces_ok else "FAIL"])
 	print("area drop     : %.3f (expect %.1f)        -> %s" % [area_drop, EXPECTED_AREA_DROP, "OK" if area_ok else "FAIL"])
+	print("see-through   : area drop %.3f (expect 0)   -> %s" % [stock.area - see_through.area, "OK" if see_through_ok else "FAIL"])
 	print("RESULT        : %s" % ("PASS" if ok else "FAIL"))
 	print("==================================\n")
 	quit(0 if ok else 1)
