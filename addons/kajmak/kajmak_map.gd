@@ -76,7 +76,7 @@ func prepare_build() -> bool:
 
 	if not map_settings:
 		push_warning("Map assembler does not have a map settings provided and will use default map settings.")
-		load(ProjectSettings.get_setting("func_godot/default_map_settings", "res://addons/func_godot/func_godot_default_map_settings.tres"))
+		map_settings = load(ProjectSettings.get_setting("func_godot/default_map_settings", "res://addons/func_godot/func_godot_default_map_settings.tres"))
 	return true
 
 ## Stage 1 (MAIN thread): parse the map and run the resource-touching pre-cull
@@ -115,7 +115,7 @@ func setup_generate(state: BuildState) -> Dictionary:
 
 ## Stage 2 (any thread): the cull. Pure math, no resources, so it runs off the main
 ## thread in the editor. False on cancel.
-func run_cull(ctx: Dictionary, state: BuildState) -> bool:
+static func run_cull(ctx: Dictionary, state: BuildState) -> bool:
 	var generator: KajmakGeometryGenerator = ctx["generator"]
 	if generator.cull_step() != OK or state.cancelled:
 		return false

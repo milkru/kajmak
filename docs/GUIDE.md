@@ -114,7 +114,7 @@ Linked groups are different. `func_godot` does not apply linked group transforms
 * Exterior culling needs a sealed map. A wall that is half against terrain and half open can be split correctly, but a real leak can still cause bad culling.
 * Split faces can end up with more triangles than they had before.
 * Welding adds corners and triangles to the faces it touches.
-* Collision is not changed. `kajmak` only removes visual surfaces.
+* Convex collision is not changed. Concave collision is built from the faces `kajmak` keeps, so culled faces have no collision triangles.
 
 ## Running the tests
 

@@ -13,7 +13,7 @@ This is the same kind of optimization used by old Quake and Half-Life compilers.
 1. Copy `addons/kajmak` into your project, next to `addons/func_godot`.
 2. Open Project Settings, go to Plugins and enable both `func_godot` and `kajmak`.
 
-Built and tested with `func_godot` 2025.12 and Godot 4.5. Other Godot versions probably work, but they have not been tested yet.
+Built and tested with `func_godot` 2025.12 and Godot 4.5 and 4.7. Other Godot versions probably work, but they have not been tested yet.
 
 ## Usage
 
@@ -43,6 +43,6 @@ On the `KajmakMap` node, under the `kajmak` category:
 * **debug_log_pairs**
   Prints removed and split faces to the Output panel. Off by default.
 
-Collision is never changed. `kajmak` only removes visual surfaces.
+Convex collision is never changed. Concave collision is built from the faces `kajmak` keeps, so a culled face loses its collision triangles too; it is buried or outside the map, where nothing can touch it.
 
 See [docs/GUIDE.md](docs/GUIDE.md) for details about exterior culling, skip brushes, leaks, limits, and tests.

@@ -1,6 +1,9 @@
 # RESEARCH.md — Import-time hidden-face culling for func_godot
 
 ## Purpose of this document
+*History: the plan kajmak started from. The code has moved on; [README](README.md) and
+[the guide](docs/GUIDE.md) describe it as it is.*
+
 This file is the full context bootstrap for a new plugin/project (working dir
 `C:/Dev/kajmak`, its own git repo). It was written by Claude in a prior session
 after exploring a func_godot addon. Read this first in any new session before

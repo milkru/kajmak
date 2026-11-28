@@ -43,10 +43,11 @@ func _init() -> void:
 	# A split adds vertices to the top face (frame has more verts than a quad).
 	var split_ok: bool = kajmak.tris > stock.tris - 2  # net triangles did not collapse
 	var see_through_ok: bool = see_through.surfaces == stock.surfaces and absf(see_through.area - stock.area) <= AREA_TOLERANCE
-	var ok: bool = surfaces_ok and area_ok and see_through_ok
+	var ok: bool = surfaces_ok and area_ok and split_ok and see_through_ok
 
 	print("surfaces      : %d (expect %d)            -> %s" % [kajmak.surfaces, stock.surfaces - 1, "OK" if surfaces_ok else "FAIL"])
 	print("area drop     : %.3f (expect %.1f)        -> %s" % [area_drop, EXPECTED_AREA_DROP, "OK" if area_ok else "FAIL"])
+	print("triangles     : %d (stock %d, no collapse)  -> %s" % [kajmak.tris, stock.tris, "OK" if split_ok else "FAIL"])
 	print("see-through   : area drop %.3f (expect 0)   -> %s" % [stock.area - see_through.area, "OK" if see_through_ok else "FAIL"])
 	print("RESULT        : %s" % ("PASS" if ok else "FAIL"))
 	print("==================================\n")

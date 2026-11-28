@@ -11,7 +11,7 @@ class_name KajmakGeometryGenerator extends FuncGodotGeometryGenerator
 ## A last pass welds T-junctions (a corner of one face on another face's edge), so
 ## neighbouring faces share their corners and leave no hairline cracks.
 ##
-## Not handled (see RESEARCH.md): illusionary/liquid brushes are treated as occluders.
+## See-through brushes (see_through_classes) hide no face.
 
 ## When false (with [member cull_exterior] and [member weld_t_junctions] off), builds
 ## identically to stock func_godot (regression escape hatch).
@@ -67,17 +67,6 @@ const _DEGENERATE_AREA := 1.0e-9
 # Reject a merged exterior triangulation (use the fan fallback) when its area drifts
 # from the kept area by more than this fraction.
 const _TRIANGULATION_AREA_TOLERANCE := 0.02
-
-# Full synchronous build (runtime, headless). The editor calls the three phases
-# separately so only the cull runs on a worker thread.
-func build(build_flags: int, entities: Array[_EntityData]) -> Error:
-	var err := generate_pre_cull(entities)
-	if err != OK:
-		return err
-	err = cull_step()
-	if err != OK:
-		return err
-	return generate_post_cull(build_flags)
 
 ## Phase 1 (MAIN thread): materials + brush vertices + origins + winding. Touches
 ## resources (textures/materials) and so must not run on a worker thread.
@@ -442,6 +431,9 @@ func _build_occluder_bsp():
 # partly outside -> rebuilt to its visible region.
 func cull_exterior_faces() -> void:
 	var bsp: Variant = _build_occluder_bsp()
+	if bsp.aborted:
+		push_warning("kajmak: the occluder BSP hit its size limit; no face is culled as exterior")
+		return
 	bsp.mark_exterior()
 
 	var to_remove: Array = []
@@ -1292,8 +1284,18 @@ class _ECNode:
 		x = px
 		y = py
 
+var _ec_nodes: Array = []  # every node of the running _earcut (one thread: the cull's)
+
 # Triangulate a simple polygon (outer ring + hole rings) into flat triangle points.
 func _earcut(outer: PackedVector2Array, holes: Array) -> PackedVector2Array:
+	var out := _earcut_rings(outer, holes)
+	for n in _ec_nodes:  # the rings' nodes hold each other (RefCounted): unlink them to free them
+		n.prev = null
+		n.next = null
+	_ec_nodes.clear()
+	return out
+
+func _earcut_rings(outer: PackedVector2Array, holes: Array) -> PackedVector2Array:
 	var data := PackedVector2Array(outer)
 	var hole_indices := PackedInt32Array()
 	for h in holes:
@@ -1336,6 +1338,7 @@ func _ec_linked_list(data: PackedVector2Array, start: int, end: int, clockwise: 
 
 func _ec_insert(i: int, pt: Vector2, last: _ECNode) -> _ECNode:
 	var p := _ECNode.new(i, pt.x, pt.y)
+	_ec_nodes.append(p)
 	if last == null:
 		p.prev = p
 		p.next = p
@@ -1447,6 +1450,8 @@ func _ec_find_hole_bridge(hole: _ECNode, outer_node: _ECNode) -> _ECNode:
 func _ec_split_polygon(a: _ECNode, b: _ECNode) -> _ECNode:
 	var a2 := _ECNode.new(a.i, a.x, a.y)
 	var b2 := _ECNode.new(b.i, b.x, b.y)
+	_ec_nodes.append(a2)
+	_ec_nodes.append(b2)
 	var an := a.next
 	var bp := b.prev
 	a.next = b

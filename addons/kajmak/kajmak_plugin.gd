@@ -30,9 +30,6 @@ var _building: bool = false
 func _get_plugin_name() -> String:
 	return "kajmak"
 
-func _handles(object: Object) -> bool:
-	return _map_script != null and is_instance_valid(object) and object.get_script() == _map_script
-
 const _FUNC_GODOT_NAME := "func_godot"
 
 func _enter_tree() -> void:
@@ -159,7 +156,7 @@ func request_build(map: Object) -> void:
 
 # Worker thread body: cull only (no scene tree, no resources).
 func _run_cull() -> void:
-	_cull_ok = _map.run_cull(_ctx, _state)
+	_cull_ok = _map_script.run_cull(_ctx, _state)  # static: the node may be freed meanwhile
 
 func _process(_delta: float) -> void:
 	if not _building:
@@ -190,7 +187,7 @@ func _finish() -> void:
 	if _toolbar:
 		_toolbar.visible = false
 
-	if map != null and ok:
+	if is_instance_valid(map) and ok:
 		map.finish_staged(ctx)  # surfaces + assemble on the main thread
 
 func _on_cancel_pressed() -> void:

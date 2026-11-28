@@ -4,7 +4,8 @@ extends SceneTree
 ## static solid brushes: with the weld every edge of it is shared by two triangles (no
 ## T-junction, no open edge), so no hairline crack can let light through, and every
 ## triangle of a face faces the way the face does (none flipped). Built without the
-## weld, the splits leave T-junctions (proving the check sees them).
+## weld, the splits leave T-junctions (proving the check sees them). Sealed maps are
+## also checked with exterior culling on (the inner shell alone must be closed).
 ##
 ## Run:
 ##   godot --headless --path external/func_godot_test_project \
@@ -19,6 +20,8 @@ const MAPS := [
 	"res://dev/maps/flush_overlap.map", "res://dev/maps/flush_nested.map",
 	"res://dev/maps/mover.map", "res://dev/maps/octagon_hall.map",
 ]
+# Sealed maps, also built with exterior culling on.
+const SEALED := ["res://dev/maps/room.map"]
 const MERGE := 1.0 / 8192.0  # Godot units: corners closer than this are one
 const ON_EDGE := 1.0 / 4096.0
 
@@ -34,6 +37,13 @@ func _init() -> void:
 		print("%s  T-junctions %d, open edges %d, flipped %d -> %s" % [
 			map_file.get_file(), welded["t_junctions"], welded["open_edges"], welded["flipped"],
 			"PASS" if ok else "FAIL"])
+	for map_file in SEALED:
+		var shell := _seams(map_file, true, true)
+		var ok: bool = shell["t_junctions"] == 0 and shell["open_edges"] == 0 and shell["flipped"] == 0
+		all_ok = all_ok and ok
+		print("%s (exterior culled)  T-junctions %d, open edges %d, flipped %d -> %s" % [
+			map_file.get_file(), shell["t_junctions"], shell["open_edges"], shell["flipped"],
+			"PASS" if ok else "FAIL"])
 	var seen: bool = unwelded_t > 0
 	all_ok = all_ok and seen
 	print("without the weld: %d T-junction(s) -> %s" % [unwelded_t, "PASS" if seen else "FAIL (check blind?)"])
@@ -41,9 +51,10 @@ func _init() -> void:
 	print("=====================\n")
 	quit(0 if all_ok else 1)
 
-func _seams(map_file: String, weld: bool) -> Dictionary:
+func _seams(map_file: String, weld: bool, exterior := false) -> Dictionary:
 	var map := KajmakMap.new()
 	map.weld_t_junctions = weld
+	map.cull_exterior_faces = exterior
 	map.local_map_file = map_file
 	get_root().add_child(map)
 	map.build()

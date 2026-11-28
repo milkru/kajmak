@@ -2,7 +2,7 @@
 extends SceneTree
 ## Real-geometry smoke test: build the bundled test maps with stock func_godot
 ## and with KajmakMap (culling on), and confirm the build completes and culling
-## never increases visible surface area (it only removes hidden geometry).
+## never increases visible surface area (it only removes hidden geometry) nor removes it all.
 ##
 ## Run:
 ##   godot --headless --path external/func_godot_test_project \
@@ -17,7 +17,7 @@ func _init() -> void:
 	for map_file in MAPS:
 		var stock := _stats(FuncGodotMap.new(), map_file, false)
 		var kajmak := _stats(KajmakMap.new(), map_file, true)
-		var area_ok: bool = kajmak.area <= stock.area + AREA_SLACK
+		var area_ok: bool = kajmak.area <= stock.area + AREA_SLACK and kajmak.area > 0.0
 		all_ok = all_ok and area_ok
 		print("%s" % map_file)
 		print("  stock : surfaces %d, verts %d, area %.2f" % [stock.surfaces, stock.verts, stock.area])

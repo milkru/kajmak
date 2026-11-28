@@ -17,7 +17,6 @@ const MAPS := [
 	"res://dev/maps/skip_cover.map",
 	"res://dev/maps/floor_boxes.map",
 	"res://dev/maps/window.map",
-	"res://dev/maps/first_test.map",  # user's combined case, present only locally
 ]
 
 func _init() -> void:
