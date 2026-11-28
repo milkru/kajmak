@@ -171,17 +171,28 @@ func _child_vertices(parent_verts: PackedVector3Array, parent_cell: Array, new_p
 	for v in parent_verts:
 		if new_plane.distance_to(v) >= -EPS:
 			out.append(v)
-	var child_cell := parent_cell.duplicate()
+	var child_cell: Array[Plane] = []
+	child_cell.assign(parent_cell)
 	child_cell.append(new_plane)
 	var n := parent_cell.size()
+	# _inside_cell inlined, the plane that cut off the last point tried first
+	var last := 0
 	for a in range(n):
-		var pa: Plane = parent_cell[a]
+		var pa: Plane = child_cell[a]
 		for b in range(a + 1, n):
-			var p = pa.intersect_3(parent_cell[b], new_plane)
+			var p = pa.intersect_3(child_cell[b], new_plane)
 			if p == null:
 				continue
 			var pt: Vector3 = p
-			if _inside_cell(pt, child_cell):
+			if child_cell[last].distance_to(pt) < -EPS:
+				continue
+			var inside := true
+			for i in child_cell.size():
+				if child_cell[i].distance_to(pt) < -EPS:
+					inside = false
+					last = i
+					break
+			if inside:
 				out.append(pt)
 	return out
 
@@ -280,9 +291,11 @@ func _portalize(node: BSPNode, cell: Array) -> void:
 		var backs: Array = []
 		_gather_pieces(node.front, portal, fronts)
 		_gather_pieces(node.back, portal, backs)
-		for f in fronts:
-			for b in backs:
-				if _polys_overlap(f[1], b[1], node.plane):
+		# Pieces whose bounds lie apart can't overlap: only the others are intersected.
+		var flat_backs := _flatten(backs, node.plane)
+		for f in _flatten(fronts, node.plane):
+			for b in flat_backs:
+				if (f[2] as Rect2).intersects(b[2], true) and _polys_overlap(f[1], b[1]):
 					_link(f[0], b[0])
 	var fc := cell.duplicate()
 	fc.append(node.plane)
@@ -350,21 +363,31 @@ func _clip_front(poly: PackedVector3Array, plane: Plane) -> PackedVector3Array:
 	return out
 
 
-# Do two coplanar polygons overlap with positive area, measured in the plane.
-func _polys_overlap(a: PackedVector3Array, b: PackedVector3Array, plane: Plane) -> bool:
-	if a.size() < 3 or b.size() < 3:
-		return false
+# Each [leaf, piece] of coplanar pieces as [leaf, piece measured in the plane, its bounds
+# grown by EPS]. Bounds apart by more than 2 EPS leave no overlap, even after
+# Geometry2D's rounding (to 1e-5).
+func _flatten(pieces: Array, plane: Plane) -> Array:
 	var n := plane.normal
 	var ref := Vector3.UP if absf(n.dot(Vector3.UP)) < 0.9 else Vector3.RIGHT
 	var u := n.cross(ref).normalized()
 	var v := n.cross(u).normalized()
 	var c := plane.get_center()
-	var a2 := PackedVector2Array()
-	for p in a:
-		a2.append(Vector2((p - c).dot(u), (p - c).dot(v)))
-	var b2 := PackedVector2Array()
-	for p in b:
-		b2.append(Vector2((p - c).dot(u), (p - c).dot(v)))
+	var out: Array = []
+	for piece in pieces:
+		var flat := PackedVector2Array()
+		for p: Vector3 in piece[1]:
+			flat.append(Vector2((p - c).dot(u), (p - c).dot(v)))
+		var box := Rect2(flat[0], Vector2.ZERO)
+		for p in flat:
+			box = box.expand(p)
+		out.append([piece[0], flat, box.grow(EPS)])
+	return out
+
+
+# Do two coplanar polygons, measured in their plane (_flatten), overlap with positive area.
+func _polys_overlap(a2: PackedVector2Array, b2: PackedVector2Array) -> bool:
+	if a2.size() < 3 or b2.size() < 3:
+		return false
 	for poly in Geometry2D.intersect_polygons(a2, b2):
 		var area := 0.0
 		var m := poly.size()
